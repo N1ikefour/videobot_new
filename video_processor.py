@@ -314,28 +314,15 @@ def process_video_copy_new(input_path: str, output_path: str, copy_index: int, a
             # Получаем текущие размеры
             original_width, original_height = modified_video.size
             
-            # Проверяем, если оригинальный размер 1080x1920, не меняем его
-            if original_width == 1080 and original_height == 1920:
-                logger.info(f"Оригинальный размер 1080x1920 сохранён без изменений")
+            # Всегда меняем на 1080x1920 (вертикальное видео для Stories/Reels)
+            target_width, target_height = 1080, 1920
+            
+            # Проверяем, нужно ли изменение
+            if original_width != target_width or original_height != target_height:
+                modified_video = modified_video.resize((target_width, target_height))
+                logger.info(f"Разрешение изменено с {original_width}x{original_height} на {target_width}x{target_height}")
             else:
-                # Варианты изменения разрешения
-                resolution_options = [
-                    (1280, 720),   # HD
-                    (854, 480),    # 480p
-                    (640, 360),    # 360p
-                    (1920, 1080),  # Full HD
-                ]
-                
-                # Выбираем разрешение отличное от оригинального
-                new_resolution = None
-                for width, height in resolution_options:
-                    if width != original_width or height != original_height:
-                        new_resolution = (width, height)
-                        break
-                
-                if new_resolution:
-                    modified_video = modified_video.resize(new_resolution)
-                    logger.info(f"Разрешение изменено с {original_width}x{original_height} на {new_resolution[0]}x{new_resolution[1]}")
+                logger.info(f"Разрешение уже {target_width}x{target_height}, изменение не требуется")
         
         # Настройки сжатия
         if compress:

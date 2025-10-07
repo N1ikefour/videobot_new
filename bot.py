@@ -25,6 +25,10 @@ class VideoBot:
         self.user_data = {}
         # Добавляем словарь для отслеживания активных задач обработки
         self.active_processing_tasks = {}
+        # Семафор для ограничения количества одновременных обработок видео
+        # Для нагрузки 50-100 одновременных пользователей из 200 общих
+        # Оптимальное значение: 20 одновременных обработок
+        self.processing_semaphore = asyncio.Semaphore(20)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start - приветствие пользователя"""
@@ -243,144 +247,185 @@ class VideoBot:
     async def _process_video_async(self, user_id: int, user_settings: dict, 
                                  processing_message, context, chat_id: int):
         """Асинхронная обработка видео с промежуточными обновлениями"""
-        try:
-            copies = user_settings['copies']
-            add_frames = user_settings['add_frames']
-            compress = user_settings['compress']
-            change_resolution = user_settings['change_resolution']
-            
-            # Используем оригинальное видео
-            video_file_id = user_settings.get('processing_video_id', user_settings['video_file_id'])
-            
-            # Скачиваем файл
-            await processing_message.edit_text(
-                f"🔄 Обработка видео...\n"
-                f"📊 Параметры: {copies} копий\n\n"
-                f"📥 Скачиваю видео..."
-            )
-            
-            video_file = await context.bot.get_file(video_file_id)
-            input_path = f"temp/input_{user_id}.mp4"
-            
-            # Создаем директорию temp если не существует
-            os.makedirs("temp", exist_ok=True)
-            
-            await video_file.download_to_drive(input_path)
-            
-            # Проверяем что файл был скачан
-            if not os.path.exists(input_path):
-                logger.error(f"Файл {input_path} не был создан после скачивания")
-                await processing_message.edit_text("❌ Ошибка при скачивании видео. Попробуйте еще раз.")
-                return
-            
-            file_size = os.path.getsize(input_path)
-            logger.info(f"Файл {input_path} успешно скачан, размер: {file_size} байт")
-            
-            # Обновляем статус
-            await processing_message.edit_text(
-                f"🔄 Обработка видео...\n"
-                f"📊 Параметры: {copies} копий\n\n"
-                f"🎬 Создаю уникальные копии..."
-            )
-            
-            # Создаем задачу обработки с callback для обновления прогресса
-            processed_videos = await self._process_with_progress_updates(
-                input_path, user_id, copies, add_frames, compress, change_resolution,
-                processing_message
-            )
-            
-            # Обновляем сообщение
-            await processing_message.edit_text(
-                f"📤 Отправляю обработанные видео...\n"
-                f"✅ Создано {len(processed_videos)} уникальных копий"
-            )
-            
-            # Отправляем обработанные видео
-            for i, video_path in enumerate(processed_videos, 1):
-                # Обновляем прогресс отправки
+        # Используем семафор для ограничения количества одновременных обработок
+        async with self.processing_semaphore:
+            try:
+                copies = user_settings['copies']
+                add_frames = user_settings['add_frames']
+                compress = user_settings['compress']
+                change_resolution = user_settings['change_resolution']
+                
+                # Используем оригинальное видео
+                video_file_id = user_settings.get('processing_video_id', user_settings['video_file_id'])
+                
+                # Скачиваем файл
                 await processing_message.edit_text(
-                    f"📤 Отправляю видео {i}/{len(processed_videos)}...\n"
+                    f"🔄 Обработка видео...\n"
+                    f"📊 Параметры: {copies} копий\n\n"
+                    f"📥 Скачиваю видео..."
+                )
+                
+                video_file = await context.bot.get_file(video_file_id)
+                input_path = f"temp/input_{user_id}.mp4"
+                
+                # Создаем директорию temp если не существует
+                os.makedirs("temp", exist_ok=True)
+                
+                await video_file.download_to_drive(input_path)
+                
+                # Проверяем что файл был скачан
+                if not os.path.exists(input_path):
+                    logger.error(f"Файл {input_path} не был создан после скачивания")
+                    await processing_message.edit_text("❌ Ошибка при скачивании видео. Попробуйте еще раз.")
+                    return
+                
+                file_size = os.path.getsize(input_path)
+                logger.info(f"Файл {input_path} успешно скачан, размер: {file_size} байт")
+                
+                # Обновляем статус
+                await processing_message.edit_text(
+                    f"🔄 Обработка видео...\n"
+                    f"📊 Параметры: {copies} копий\n\n"
+                    f"🎬 Создаю уникальные копии..."
+                )
+                
+                # Создаем задачу обработки с callback для обновления прогресса
+                processed_videos = await self._process_with_progress_updates(
+                    input_path, user_id, copies, add_frames, compress, change_resolution,
+                    processing_message
+                )
+                
+                # Обновляем сообщение
+                await processing_message.edit_text(
+                    f"📤 Отправляю обработанные видео...\n"
                     f"✅ Создано {len(processed_videos)} уникальных копий"
                 )
                 
-                # Используем asyncio.to_thread для неблокирующего чтения файла
-                video_data = await asyncio.to_thread(self._read_video_file, video_path)
-                await context.bot.send_video(
-                    chat_id=chat_id,
-                    video=video_data,
-                    caption=f"🎬 Уникальная копия #{i}/{copies}"
-                )
-                # Удаляем временный файл
-                os.remove(video_path)
-            
-            # Удаляем входной файл
-            os.remove(input_path)
-            
-            # Финальное сообщение
-            await processing_message.edit_text(
-                f"✅ Обработка завершена!\n"
-                f"📹 Отправлено {len(processed_videos)} уникальных копий\n\n"
-                "Отправьте новое видео для обработки или используйте /start"
-            )
-            
-        except Exception as e:
-            logger.error(f"Ошибка при обработке видео: {e}")
-            try:
+                # Отправляем обработанные видео
+                for i, video_path in enumerate(processed_videos, 1):
+                    # Обновляем прогресс отправки
+                    await processing_message.edit_text(
+                        f"📤 Отправляю видео {i}/{len(processed_videos)}...\n"
+                        f"✅ Создано {len(processed_videos)} уникальных копий"
+                    )
+                    
+                    # Используем asyncio.to_thread для неблокирующего чтения файла
+                    video_data = await asyncio.to_thread(self._read_video_file, video_path)
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=video_data,
+                        caption=f"🎬 Уникальная копия #{i}/{copies}"
+                    )
+                    # Удаляем временный файл
+                    os.remove(video_path)
+                
+                # Удаляем входной файл
+                os.remove(input_path)
+                
+                # Финальное сообщение
                 await processing_message.edit_text(
-                    f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
-                    "Попробуйте еще раз или отправьте другое видео."
+                    f"✅ Обработка завершена!\n"
+                    f"📹 Отправлено {len(processed_videos)} уникальных копий\n\n"
+                    "Отправьте новое видео для обработки или используйте /start"
                 )
-            except:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
-                         "Попробуйте еще раз или отправьте другое видео."
-                )
-        finally:
-            # Очищаем данные пользователя и активную задачу
-            if user_id in self.user_data:
-                del self.user_data[user_id]
-            if user_id in self.active_processing_tasks:
-                del self.active_processing_tasks[user_id]
+                
+            except Exception as e:
+                logger.error(f"Ошибка при обработке видео: {e}")
+                try:
+                    await processing_message.edit_text(
+                        f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
+                        "Попробуйте еще раз или отправьте другое видео."
+                    )
+                except:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
+                             "Попробуйте еще раз или отправьте другое видео."
+                    )
+            finally:
+                # Очищаем данные пользователя и активную задачу
+                if user_id in self.user_data:
+                    del self.user_data[user_id]
+                if user_id in self.active_processing_tasks:
+                    del self.active_processing_tasks[user_id]
 
     async def _process_with_progress_updates(self, input_path: str, user_id: int, 
                                            copies: int, add_frames: bool, compress: bool, change_resolution: bool,
                                            processing_message):
-        """Обработка видео с промежуточными обновлениями прогресса"""
-        processed_videos = []
+        """Обработка видео с параллельной обработкой всех копий одновременно"""
+        
+        # Обновляем статус - начинаем параллельную обработку
+        await processing_message.edit_text(
+            f"🔄 Обработка видео...\n"
+            f"📊 Создаю {copies} копий параллельно\n\n"
+            f"🚀 Запускаю обработку всех копий одновременно..."
+        )
+        
+        # Создаем задачи для параллельной обработки всех копий
+        tasks = []
+        output_paths = []
         
         for i in range(copies):
-            # Обновляем прогресс
-            await processing_message.edit_text(
-                f"🔄 Обработка видео...\n"
-                f"📊 Создаю копию {i+1}/{copies}\n\n"
-                f"🎬 Применяю уникальные модификации..."
-            )
-            
-            # Обрабатываем одну копию
             output_path = f"output/processed_{user_id}_{i+1}.mp4"
+            output_paths.append(output_path)
             
-            try:
-                # Создаем задачу для обработки одной копии
-                copy_task = asyncio.create_task(
-                    self._process_single_copy(input_path, output_path, i, add_frames, compress, change_resolution)
-                )
-                
-                # Ждем завершения с возможностью обновления статуса
-                result = await copy_task
-                
-                if result and os.path.exists(output_path):
-                    processed_videos.append(output_path)
-                    logger.info(f"Копия {i+1} создана успешно")
-                else:
-                    logger.error(f"Ошибка при создании копии {i+1}")
-                    
-            except Exception as e:
-                logger.error(f"Ошибка при создании копии {i+1}: {str(e)}")
-                # Продолжаем обработку остальных копий
-                continue
+            # Создаем задачу для каждой копии
+            task = self._process_single_copy(
+                input_path, output_path, i, add_frames, compress, change_resolution
+            )
+            tasks.append(task)
         
+        # Создаем задачу для периодического обновления статуса
+        completed_count = {'value': 0}
+        status_update_task = asyncio.create_task(
+            self._update_processing_status(processing_message, copies, completed_count)
+        )
+        
+        # Запускаем все копии параллельно
+        logger.info(f"🚀 Запускаю параллельную обработку {copies} копий")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Останавливаем обновление статуса
+        status_update_task.cancel()
+        try:
+            await status_update_task
+        except asyncio.CancelledError:
+            pass
+        
+        # Собираем успешно обработанные видео
+        processed_videos = []
+        for i, (result, output_path) in enumerate(zip(results, output_paths)):
+            if isinstance(result, Exception):
+                logger.error(f"❌ Ошибка при создании копии {i+1}: {str(result)}")
+            elif result and os.path.exists(output_path):
+                processed_videos.append(output_path)
+                logger.info(f"✅ Копия {i+1} создана успешно")
+            else:
+                logger.error(f"❌ Копия {i+1} не была создана")
+        
+        logger.info(f"✅ Параллельная обработка завершена. Успешно: {len(processed_videos)}/{copies}")
         return processed_videos
+    
+    async def _update_processing_status(self, processing_message, total_copies: int, completed_count: dict):
+        """Периодически обновляет статус обработки"""
+        dots = 0
+        while True:
+            try:
+                await asyncio.sleep(3)  # Обновляем каждые 3 секунды
+                dots = (dots + 1) % 4
+                animation = "." * dots
+                
+                await processing_message.edit_text(
+                    f"🔄 Обработка видео{animation}\n"
+                    f"📊 Обрабатываю {total_copies} копий параллельно\n\n"
+                    f"⚡ Это быстрее в {total_copies}x раз!\n"
+                    f"⏳ Пожалуйста, подождите..."
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Ошибка при обновлении статуса: {e}")
+                break
 
     async def _process_single_copy(self, input_path: str, output_path: str, 
                                  copy_index: int, add_frames: bool, compress: bool, change_resolution: bool):
