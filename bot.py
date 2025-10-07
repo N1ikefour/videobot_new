@@ -26,9 +26,9 @@ class VideoBot:
         # Добавляем словарь для отслеживания активных задач обработки
         self.active_processing_tasks = {}
         # Семафор для ограничения количества одновременных обработок видео
-        # Для нагрузки 50-100 одновременных пользователей из 200 общих
-        # Оптимальное значение: 20 одновременных обработок
-        self.processing_semaphore = asyncio.Semaphore(20)
+        # Для конфигурации: 16 vCPU, 32 GB RAM
+        # Оптимальное значение: 8 одновременных обработок
+        self.processing_semaphore = asyncio.Semaphore(10)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start - приветствие пользователя"""
