@@ -126,11 +126,17 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
     """Функция для обработки видео в отдельном процессе (обходит GIL)"""
     import os
     import logging
+    import gc
+    import time
     from moviepy.editor import VideoFileClip
     
     # Настраиваем логирование для процесса
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+    
+    video = None
+    modified_video = None
+    temp_audio_file = None
     
     try:
         logger.info(f"Процесс {os.getpid()}: Начинаю обработку {input_path}")
@@ -162,8 +168,8 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
             bitrate = None
             audio_codec = 'aac'
         
-        # Сохраняем видео
-        temp_audio_file = f"temp-audio-{copy_index}-{os.getpid()}.m4a"
+        # Создаем уникальное имя для временного аудио файла
+        temp_audio_file = f"temp-audio-{copy_index}-{int(time.time())}-{os.getpid()}.m4a"
         
         logger.info(f"Процесс {os.getpid()}: Сохраняю видео в {output_path}")
         
@@ -185,22 +191,39 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
             logger=None
         )
         
-        # Закрываем видео объекты
-        modified_video.close()
-        video.close()
-        
-        # Удаляем временный аудио файл если он остался
-        if os.path.exists(temp_audio_file):
-            try:
-                os.remove(temp_audio_file)
-            except:
-                pass
-        
         logger.info(f"Процесс {os.getpid()}: Обработка завершена успешно")
                 
     except Exception as e:
         logger.error(f"Процесс {os.getpid()}: Ошибка при обработке видео: {e}")
         raise
+        
+    finally:
+        # Принудительно закрываем все видео объекты
+        try:
+            if modified_video is not None:
+                modified_video.close()
+                del modified_video
+        except:
+            pass
+            
+        try:
+            if video is not None:
+                video.close()
+                del video
+        except:
+            pass
+        
+        # Удаляем временный аудио файл если он остался
+        if temp_audio_file and os.path.exists(temp_audio_file):
+            try:
+                time.sleep(0.5)  # Небольшая задержка
+                os.remove(temp_audio_file)
+                logger.info(f"Процесс {os.getpid()}: Удален временный аудио файл: {temp_audio_file}")
+            except Exception as e:
+                logger.warning(f"Процесс {os.getpid()}: Не удалось удалить временный аудио файл {temp_audio_file}: {e}")
+        
+        # Принудительная очистка памяти
+        gc.collect()
 
 
 def apply_unique_modifications(video, copy_index: int, add_frames: bool):
@@ -331,8 +354,11 @@ def add_frame_to_video(video, color, thickness):
             return None
 
 
-def process_video_copy_new(input_path: str, output_path: str, copy_index: int, add_frames: bool, compress: bool, change_resolution: bool):
+def process_video_copy_new(input_path: str, output_path: str, copy_index: int, add_frames: bool, compress: bool, change_resolution: bool, user_id: int = None):
     """Обрабатывает одну копию видео - функция для использования в ProcessPoolExecutor"""
+    video = None
+    modified_video = None
+    
     try:
         logger.info(f"Начинаю обработку копии {copy_index + 1}: {input_path} -> {output_path}")
         
@@ -379,17 +405,20 @@ def process_video_copy_new(input_path: str, output_path: str, copy_index: int, a
                 'audio_codec': 'aac'
             }
         
+        # Создаем уникальное имя для временного аудиофайла
+        temp_audio_name = f'temp-audio-{user_id}-{copy_index}.m4a' if user_id else f'temp-audio-{copy_index}.m4a'
+        
         # Сохраняем видео
         modified_video.write_videofile(
             output_path,
             **codec_settings,
-            temp_audiofile='temp-audio.m4a',
+            temp_audiofile=temp_audio_name,
             remove_temp=True,
             verbose=False,
             logger=None
         )
         
-        # Закрываем видео для освобождения памяти
+        # Закрываем видео объекты
         video.close()
         modified_video.close()
         
