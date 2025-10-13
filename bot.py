@@ -1,7 +1,9 @@
 import logging
 import os
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import time
+import gc
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
@@ -17,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-WAITING_FOR_VIDEO, CHOOSING_COPIES, CHOOSING_FRAMES, CHOOSING_RESOLUTION, CHOOSING_COMPRESSION = range(5)
+MAIN_MENU, WAITING_FOR_VIDEO, PARAMETERS_MENU, CHOOSING_COPIES, CHOOSING_FRAMES, CHOOSING_RESOLUTION, CHOOSING_COMPRESSION = range(7)
 
 class VideoBot:
     def __init__(self):
@@ -31,29 +33,323 @@ class VideoBot:
         self.processing_semaphore = asyncio.Semaphore(10)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /start - приветствие пользователя"""
-        user = update.effective_user
+        """Обработчик команды /start"""
+        user_name = update.effective_user.first_name
+        user_id = update.effective_user.id
+        
+        # Очищаем данные пользователя при старте
+        if user_id in self.user_data:
+            del self.user_data[user_id]
+        
         welcome_text = (
-            f"Привет, {user.first_name}! 👋\n\n"
-            "🎬 **Бот для уникализации видео**\n\n"
-            "📋 **Как пользоваться:**\n"
-            "1️⃣ Отправьте мне видеофайл (до 50 МБ)\n"
-            "2️⃣ Нажмите кнопку 'Уникализировать видео'\n"
-            "3️⃣ Выберите количество копий (1-5)\n"
-            "4️⃣ Выберите, добавлять ли цветные рамки\n"
-            "5️⃣ Выберите уровень сжатия\n"
-            "6️⃣ Дождитесь обработки и получите уникальные копии!\n\n"
-            "⚡ **Что делает бот:**\n"
-            "• Изменяет скорость воспроизведения\n"
-            "• Добавляет цветные рамки (по желанию)\n"
-            "• Корректирует яркость и контраст\n"
-            "• Поворачивает видео на небольшой угол\n"
-            "• Добавляет едва заметный шум\n\n"
-            "⏱️ **Время обработки:** ~2-3 минуты на копию\n"
+            f"👋 **Привет, {user_name}!**\n\n"
+            "**Бот для уникализации видео** 🚀\n\n"
+            "📋 **Инструкция:**\n"
+            "1️⃣ Нажмите кнопку 'Уникализировать видео'\n"
+            "2️⃣ Отправьте видеофайл (до 50 МБ)\n"
+            "3️⃣ Выберите параметры обработки\n"
+            "4️⃣ Получите уникальные копии!\n\n"
+            "Готовы начать? 👇"
         )
         
-        await update.message.reply_text(welcome_text, parse_mode='Markdown')
-        return ConversationHandler.END
+        # Создаем главное меню с одной кнопкой внизу экрана
+        keyboard = [[KeyboardButton("🎬 Уникализировать видео")]]
+        reply_markup = ReplyKeyboardMarkup(
+            keyboard, 
+            resize_keyboard=True, 
+            one_time_keyboard=False
+        )
+        
+        # Проверяем, есть ли уже активный разговор
+        if context.user_data.get('conversation_state'):
+            # Если есть активный разговор, сбрасываем его
+            context.user_data.clear()
+        
+        await update.message.reply_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return MAIN_MENU
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /help"""
+        help_text = (
+            "🆘 **Помощь по использованию бота**\n\n"
+            
+            "📋 **Основные команды:**\n"
+            "• `/start` - Начать работу с ботом\n"
+            "• `/help` - Показать эту справку\n\n"
+            
+            "🎬 **Как уникализировать видео:**\n"
+            "1️⃣ Нажмите кнопку '🎬 Уникализировать видео'\n"
+            "2️⃣ Отправьте видеофайл (до 50 МБ)\n"
+            "3️⃣ Выберите параметры:\n"
+            "   • Количество копий (1-3-6)\n"
+            "   • Добавить цветные рамки\n"
+            "   • Изменить разрешение\n"
+            "   • Сжать видео\n"
+            "4️⃣ Получите уникальные копии!\n\n"
+            
+            "📋 **Требования к видео:**\n"
+            "• Размер: до 50 МБ\n"
+            "• Формат: MP4, AVI, MOV, MKV\n"
+            "• Длительность: до 10 минут\n\n"
+            
+            "⚡ **Особенности:**\n"
+            "• Параллельная обработка (быстро!)\n"
+            "• Автоматическая очистка файлов\n"
+            "• Поддержка множества пользователей\n\n"
+            
+            "❓ **Проблемы?**\n"
+            "Напишите `/start` для перезапуска бота"
+        )
+        
+        await update.message.reply_text(
+            help_text,
+            parse_mode='Markdown'
+        )
+
+    async def main_menu_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик главного меню"""
+        text = update.message.text
+        
+        if text == "🎬 Уникализировать видео":
+            await update.message.reply_text(
+                "📹 **Отправьте видеофайл для обработки**\n\n"
+                "📋 **Требования:**\n"
+                "• Размер файла: до 50 МБ\n"
+                "• Формат: MP4, AVI, MOV, MKV\n"
+                "• Длительность: до 10 минут\n\n"
+                "Просто прикрепите видео к сообщению 👇",
+                parse_mode='Markdown',
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return WAITING_FOR_VIDEO
+
+    def _all_parameters_selected(self, user_settings: dict) -> bool:
+        """Проверяет, выбраны ли все необходимые параметры"""
+        return (
+            user_settings.get('copies', 0) > 0 and
+            'add_frames' in user_settings and
+            'change_resolution' in user_settings and
+            'compress' in user_settings
+        )
+
+    async def show_parameters_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает меню со всеми параметрами обработки с inline кнопками"""
+        user_id = update.effective_user.id
+        user_settings = self.user_data.get(user_id, {})
+        
+        # Формируем текст с отметками для выбранных параметров
+        copies = user_settings.get('copies', 1)
+        frames_status = "✅" if user_settings.get('add_frames', False) else "❌"
+        resolution_status = "✅" if user_settings.get('change_resolution', False) else "❌"
+        compression_status = "✅" if user_settings.get('compress', False) else "❌"
+        
+        # Проверяем, выбраны ли все параметры
+        all_selected = self._all_parameters_selected(user_settings)
+        
+        # Создаем inline клавиатуру с параметрами
+        keyboard = [
+            [InlineKeyboardButton(f"Количество копий: {copies}", callback_data="choose_copies")],
+            [InlineKeyboardButton(f"Рамки {frames_status}", callback_data="toggle_frames")],
+            [InlineKeyboardButton(f"Разрешение {resolution_status}", callback_data="toggle_resolution")],
+            [InlineKeyboardButton(f"Сжатие {compression_status}", callback_data="toggle_compression")]
+        ]
+        
+        # Добавляем кнопку запуска только если все параметры выбраны
+        if all_selected:
+            keyboard.append([InlineKeyboardButton("🚀 Запустить уникализацию", callback_data="start_processing")])
+        
+        keyboard.append([InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Отправляем или редактируем сообщение
+        status_text = "✅ Все параметры выбраны!" if all_selected else "⚠️ Выберите все параметры для продолжения"
+        
+        message_text = (
+            "⚙️ **Параметры обработки видео**\n\n"
+            f"{status_text}\n\n"
+            "Нажимайте на кнопки ниже для изменения параметров.\n"
+            "✅ - параметр включен, ❌ - параметр выключен\n\n"
+        )
+        
+        if all_selected:
+            message_text += "Когда все готово, нажмите '🚀 Запустить уникализацию'"
+        else:
+            message_text += "Необходимо выбрать все параметры перед запуском обработки."
+        
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.edit_message_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        
+        return PARAMETERS_MENU
+
+    async def parameters_menu_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик меню параметров"""
+        user_id = update.effective_user.id
+        text = update.message.text
+        
+        if "Количество копий" in text:
+            return await self.choose_copies_menu(update, context)
+        elif "Рамки" in text:
+            return await self.toggle_frames(update, context)
+        elif "Разрешение" in text:
+            return await self.toggle_resolution(update, context)
+        elif "Сжатие" in text:
+            return await self.toggle_compression(update, context)
+        elif text == "🚀 Запустить уникализацию":
+            # Проверяем, что все параметры выбраны перед запуском
+            user_settings = self.user_data.get(user_id, {})
+            if self._all_parameters_selected(user_settings):
+                return await self.start_final_processing(update, context)
+            else:
+                await update.message.reply_text(
+                    "⚠️ **Не все параметры выбраны!**\n\n"
+                    "Пожалуйста, выберите все необходимые параметры перед запуском обработки.",
+                    parse_mode='Markdown'
+                )
+                return await self.show_parameters_menu(update, context)
+        elif text == "⚠️ Выберите все параметры":
+            await update.message.reply_text(
+                "⚠️ **Необходимо выбрать все параметры**\n\n"
+                "Для запуска обработки видео необходимо:\n"
+                "• Выбрать количество копий\n"
+                "• Включить или выключить рамки\n"
+                "• Включить или выключить изменение разрешения\n"
+                "• Включить или выключить сжатие\n\n"
+                "После выбора всех параметров кнопка запуска станет активной.",
+                parse_mode='Markdown'
+            )
+            return PARAMETERS_MENU
+        elif text == "🔄 Начать заново":
+            return await self.restart_process(update, context)
+        
+        return PARAMETERS_MENU
+
+    async def choose_copies_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает меню выбора количества копий"""
+        query = update.callback_query
+        await query.answer()  # Убираем индикатор загрузки
+        
+        # Создаем inline кнопки для выбора количества копий
+        keyboard = [
+            [InlineKeyboardButton("1 копия", callback_data="copies_1")],
+            [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+            [InlineKeyboardButton("6 копий", callback_data="copies_6")],
+            [InlineKeyboardButton("🔙 Назад к параметрам", callback_data="back_to_parameters")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📊 **Выберите количество копий:**\n\n"
+            "Чем больше копий, тем больше уникальных вариантов видео вы получите.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        
+        return CHOOSING_COPIES
+
+    async def toggle_frames(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Переключает параметр добавления рамок"""
+        query = update.callback_query
+        await query.answer()  # Убираем индикатор загрузки
+        
+        user_id = update.effective_user.id
+        if user_id in self.user_data:
+            current_value = self.user_data[user_id].get('add_frames', False)
+            self.user_data[user_id]['add_frames'] = not current_value
+        
+        return await self.show_parameters_menu(update, context)
+
+    async def toggle_resolution(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Переключает параметр изменения разрешения"""
+        query = update.callback_query
+        await query.answer()  # Убираем индикатор загрузки
+        
+        user_id = update.effective_user.id
+        if user_id in self.user_data:
+            current_value = self.user_data[user_id].get('change_resolution', False)
+            self.user_data[user_id]['change_resolution'] = not current_value
+        
+        return await self.show_parameters_menu(update, context)
+
+    async def toggle_compression(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Переключает параметр сжатия"""
+        query = update.callback_query
+        await query.answer()  # Убираем индикатор загрузки
+        
+        user_id = update.effective_user.id
+        if user_id in self.user_data:
+            current_value = self.user_data[user_id].get('compress', False)
+            self.user_data[user_id]['compress'] = not current_value
+        
+        return await self.show_parameters_menu(update, context)
+
+    async def _update_parameters_keyboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Беззвучно обновляет клавиатуру с параметрами"""
+        user_id = update.effective_user.id
+        user_settings = self.user_data.get(user_id, {})
+        
+        # Формируем текст с отметками для выбранных параметров
+        copies_text = f"Количество копий: {user_settings.get('copies', 1)}"
+        frames_text = f"Рамки {'✅' if user_settings.get('add_frames', False) else ''}"
+        resolution_text = f"Разрешение {'✅' if user_settings.get('change_resolution', False) else ''}"
+        compression_text = f"Сжатие {'✅' if user_settings.get('compress', False) else ''}"
+        
+        # Проверяем, выбраны ли все параметры
+        all_selected = self._all_parameters_selected(user_settings)
+        
+        # Создаем клавиатуру с параметрами
+        keyboard = [
+            [KeyboardButton(copies_text)],
+            [KeyboardButton(frames_text)],
+            [KeyboardButton(resolution_text)],
+            [KeyboardButton(compression_text)]
+        ]
+        
+        # Добавляем кнопку запуска только если все параметры выбраны
+        if all_selected:
+            keyboard.append([KeyboardButton("🚀 Запустить уникализацию")])
+        else:
+            keyboard.append([KeyboardButton("⚠️ Выберите все параметры")])
+        
+        keyboard.append([KeyboardButton("🔄 Начать заново")])
+        
+        reply_markup = ReplyKeyboardMarkup(
+            keyboard, 
+            resize_keyboard=True, 
+            one_time_keyboard=False
+        )
+        
+        # Беззвучно обновляем клавиатуру через context
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=".",  # Минимальный текст
+                reply_markup=reply_markup
+            )
+            # Сразу удаляем это сообщение
+            await context.bot.delete_message(
+                chat_id=user_id,
+                message_id=update.message.message_id + 1
+            )
+        except:
+            # Если что-то пошло не так, ничего не делаем
+            pass
+        
+        return PARAMETERS_MENU
 
     async def handle_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик получения видео от пользователя"""
@@ -64,19 +360,27 @@ class VideoBot:
             video = update.message.video
             self.user_data[user_id] = {
                 'video_file_id': video.file_id,
-                'video_file_name': f"video_{user_id}_{video.file_unique_id}.mp4"
+                'video_file_name': f"video_{user_id}_{video.file_unique_id}.mp4",
+                # Инициализируем параметры по умолчанию
+                'copies': 1,
+                'add_frames': False,
+                'change_resolution': False,
+                'compress': False
             }
             
-            # Создаем кнопку для уникализации
-            keyboard = [[InlineKeyboardButton("🎬 Уникализировать видео", callback_data="start_processing")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
             await update.message.reply_text(
-                "Видео получено! ✅\nНажмите кнопку ниже для начала обработки:",
-                reply_markup=reply_markup
+                "✅ **Видео получено!**\n\n"
+                "📊 Теперь выберите параметры обработки из меню ниже:",
+                parse_mode='Markdown'
             )
+            
+            return await self.show_parameters_menu(update, context)
         else:
-            await update.message.reply_text("Пожалуйста, отправьте видеофайл.")
+            await update.message.reply_text(
+                "❌ Пожалуйста, отправьте видеофайл.\n\n"
+                "Поддерживаемые форматы: MP4, AVI, MOV, MKV"
+            )
+            return WAITING_FOR_VIDEO
 
     async def start_processing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало процесса обработки видео"""
@@ -92,8 +396,8 @@ class VideoBot:
         # Сразу переходим к выбору количества копий, так как видео уже получено
         keyboard = [
             [InlineKeyboardButton("1 копия", callback_data="copies_1")],
-            [InlineKeyboardButton("2 копии", callback_data="copies_2")],
-            [InlineKeyboardButton("3 копии", callback_data="copies_3")]
+            [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+            [InlineKeyboardButton("6 копий", callback_data="copies_6")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -115,8 +419,8 @@ class VideoBot:
             # Создаем кнопки для выбора количества копий
             keyboard = [
                 [InlineKeyboardButton("1 копия", callback_data="copies_1")],
-                [InlineKeyboardButton("2 копии", callback_data="copies_2")],
-                [InlineKeyboardButton("3 копии", callback_data="copies_3")]
+                [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+                [InlineKeyboardButton("6 копий", callback_data="copies_6")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -130,26 +434,28 @@ class VideoBot:
             return WAITING_FOR_VIDEO
 
     async def choose_copies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Выбор количества копий"""
+        """Обработчик выбора количества копий"""
         query = update.callback_query
-        await query.answer()
+        await query.answer()  # Убираем индикатор загрузки
         
-        user_id = query.from_user.id
-        copies = int(query.data.split('_')[1])
-        self.user_data[user_id]['copies'] = copies
+        user_id = update.effective_user.id
+        callback_data = query.data
         
-        # Создаем кнопки для выбора рамок
-        keyboard = [
-            [InlineKeyboardButton("✅ Добавить рамки", callback_data="frames_yes")],
-            [InlineKeyboardButton("❌ Без рамок", callback_data="frames_no")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        if callback_data.startswith("copies_"):
+            # Извлекаем число из callback_data
+            copies = int(callback_data.split("_")[1])
+            
+            # Сохраняем выбор
+            if user_id in self.user_data:
+                self.user_data[user_id]['copies'] = copies
+            
+            # Возвращаемся к меню параметров без дополнительного сообщения
+            return await self.show_parameters_menu(update, context)
         
-        await query.edit_message_text(
-            f"Выбрано копий: {copies}\n\nВыберите опцию рамок:",
-            reply_markup=reply_markup
-        )
-        return CHOOSING_FRAMES
+        elif callback_data == "back_to_parameters":
+            return await self.show_parameters_menu(update, context)
+        
+        return CHOOSING_COPIES
 
     async def choose_frames(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Выбор добавления рамок"""
@@ -160,17 +466,22 @@ class VideoBot:
         add_frames = query.data.split('_')[1] == 'yes'
         self.user_data[user_id]['add_frames'] = add_frames
         
-        # Создаем кнопки для выбора разрешения
+        # Создаем кнопки для выбора разрешения с навигацией
         keyboard = [
             [InlineKeyboardButton("📐 Изменить разрешение", callback_data="resolution_yes")],
-            [InlineKeyboardButton("🎯 Оставить оригинальное", callback_data="resolution_no")]
+            [InlineKeyboardButton("🎯 Оставить оригинальное", callback_data="resolution_no")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_copies")],
+            [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        frames_text = "с рамками" if add_frames else "без рамок"
+        frames_text = "с цветными рамками" if add_frames else "без рамок"
         await query.edit_message_text(
-            f"Выбрано: {frames_text}\n\nИзменить разрешение видео?",
-            reply_markup=reply_markup
+            f"🎨 **Выбрано:** {frames_text}\n\n"
+            "📐 **Изменить разрешение видео?**\n"
+            "Изменение разрешения добавляет уникальности",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
         return CHOOSING_RESOLUTION
 
@@ -183,22 +494,27 @@ class VideoBot:
         change_resolution = query.data.split('_')[1] == 'yes'
         self.user_data[user_id]['change_resolution'] = change_resolution
         
-        # Создаем кнопки для выбора сжатия
+        # Создаем кнопки для выбора сжатия с навигацией
         keyboard = [
             [InlineKeyboardButton("🗜️ Сжать видео", callback_data="compress_yes")],
-            [InlineKeyboardButton("📹 Не сжимать", callback_data="compress_no")]
+            [InlineKeyboardButton("📹 Не сжимать", callback_data="compress_no")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_frames")],
+            [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         resolution_text = "изменить разрешение" if change_resolution else "оригинальное разрешение"
         await query.edit_message_text(
-            f"Выбрано: {resolution_text}\n\nВыберите опцию сжатия:",
-            reply_markup=reply_markup
+            f"📐 **Выбрано:** {resolution_text}\n\n"
+            "🗜️ **Сжать видео для уменьшения размера?**\n"
+            "Сжатие ускорит загрузку и отправку",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
         return CHOOSING_COMPRESSION
 
     async def choose_compression(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Выбор сжатия и запуск неблокирующей обработки"""
+        """Выбор сжатия и показ финального подтверждения"""
         query = update.callback_query
         await query.answer()
         
@@ -216,37 +532,34 @@ class VideoBot:
         frames_text = "с рамками" if add_frames else "без рамок"
         resolution_text = "изменить разрешение" if change_resolution else "оригинальное разрешение"
         
-        # Отправляем сообщение о начале обработки
-        processing_message = await query.edit_message_text(
-            f"🔄 Запускаю обработку видео...\n"
-            f"📊 Параметры:\n"
+        # Создаем кнопки для финального подтверждения
+        keyboard = [
+            [InlineKeyboardButton("✅ Начать обработку", callback_data="start_processing")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_resolution")],
+            [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Показываем финальное подтверждение с параметрами
+        await query.edit_message_text(
+            f"✅ **Все параметры выбраны!**\n\n"
+            f"📊 **Итоговые параметры:**\n"
             f"• Копий: {copies}\n"
             f"• Рамки: {frames_text}\n"
             f"• Разрешение: {resolution_text}\n"
             f"• Сжатие: {compress_text}\n\n"
-            f"⏳ Подготавливаю к обработке..."
+            f"🚀 Готов начать обработку видео?",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
-        
-        # Запускаем обработку в фоновом режиме
-        task = asyncio.create_task(
-            self._process_video_async(
-                user_id, 
-                user_settings, 
-                processing_message, 
-                context,
-                query.message.chat_id
-            )
-        )
-        
-        # Сохраняем задачу для возможной отмены
-        self.active_processing_tasks[user_id] = task
-        
-        # Сразу возвращаем управление боту
-        return ConversationHandler.END
+        return CHOOSING_COMPRESSION
 
     async def _process_video_async(self, user_id: int, user_settings: dict, 
                                  processing_message, context, chat_id: int):
         """Асинхронная обработка видео с промежуточными обновлениями"""
+        input_path = None
+        processed_videos = []
+        
         # Используем семафор для ограничения количества одновременных обработок
         async with self.processing_semaphore:
             try:
@@ -320,29 +633,84 @@ class VideoBot:
                     os.remove(video_path)
                 
                 # Удаляем входной файл
-                os.remove(input_path)
+                if input_path and os.path.exists(input_path):
+                    os.remove(input_path)
                 
-                # Финальное сообщение
+                # Финальное сообщение о завершении
                 await processing_message.edit_text(
                     f"✅ Обработка завершена!\n"
-                    f"📹 Отправлено {len(processed_videos)} уникальных копий\n\n"
-                    "Отправьте новое видео для обработки или используйте /start"
+                    f"📹 Отправлено {len(processed_videos)} уникальных копий",
+                    parse_mode='Markdown'
                 )
+                
+                # Отправляем отдельное сообщение с предложением прикрепить следующее видео
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="📹 **Прикрепите следующее видео**\n\n"
+                         "📋 **Требования:**\n"
+                         "• Размер файла: до 50 МБ\n"
+                         "• Формат: MP4, AVI, MOV, MKV\n"
+                         "• Длительность: до 10 минут\n\n"
+                         "Просто прикрепите видео к сообщению 👇",
+                    parse_mode='Markdown'
+                )
+                
+                # Устанавливаем состояние ожидания видео через context
+                context.user_data['conversation_state'] = WAITING_FOR_VIDEO
+                
+            except asyncio.CancelledError:
+                logger.info(f"Обработка видео для пользователя {user_id} была отменена")
+                # Не показываем сообщение об ошибке при отмене
+                return
                 
             except Exception as e:
                 logger.error(f"Ошибка при обработке видео: {e}")
+                
+                # Переход к ожиданию следующего видео при ошибке
                 try:
                     await processing_message.edit_text(
                         f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
-                        "Попробуйте еще раз или отправьте другое видео."
+                        "📹 **Прикрепите следующее видео**\n\n"
+                        "📋 **Требования:**\n"
+                        "• Размер файла: до 50 МБ\n"
+                        "• Формат: MP4, AVI, MOV, MKV\n"
+                        "• Длительность: до 10 минут\n\n"
+                        "Просто прикрепите видео к сообщению 👇",
+                        parse_mode='Markdown'
                     )
                 except:
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
-                             "Попробуйте еще раз или отправьте другое видео."
+                             "📹 **Прикрепите следующее видео**\n\n"
+                             "📋 **Требования:**\n"
+                             "• Размер файла: до 50 МБ\n"
+                             "• Формат: MP4, AVI, MOV, MKV\n"
+                             "• Длительность: до 10 минут\n\n"
+                             "Просто прикрепите видео к сообщению 👇",
+                        parse_mode='Markdown'
                     )
+                
+                # Устанавливаем состояние ожидания видео через context
+                context.user_data['conversation_state'] = WAITING_FOR_VIDEO
             finally:
+                # Очищаем временные файлы при отмене
+                if input_path and os.path.exists(input_path):
+                    try:
+                        os.remove(input_path)
+                        logger.info(f"Удален входной файл: {input_path}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении входного файла {input_path}: {e}")
+                
+                # Очищаем обработанные файлы при отмене
+                for video_path in processed_videos:
+                    if os.path.exists(video_path):
+                        try:
+                            os.remove(video_path)
+                            logger.info(f"Удален обработанный файл: {video_path}")
+                        except Exception as e:
+                            logger.error(f"Ошибка при удалении обработанного файла {video_path}: {e}")
+                
                 # Очищаем данные пользователя и активную задачу
                 if user_id in self.user_data:
                     del self.user_data[user_id]
@@ -371,7 +739,7 @@ class VideoBot:
             
             # Создаем задачу для каждой копии
             task = self._process_single_copy(
-                input_path, output_path, i, add_frames, compress, change_resolution
+                input_path, output_path, i, add_frames, compress, change_resolution, user_id
             )
             tasks.append(task)
         
@@ -409,18 +777,29 @@ class VideoBot:
     async def _update_processing_status(self, processing_message, total_copies: int, completed_count: dict):
         """Периодически обновляет статус обработки"""
         dots = 0
+        last_text = ""
         while True:
             try:
                 await asyncio.sleep(3)  # Обновляем каждые 3 секунды
                 dots = (dots + 1) % 4
                 animation = "." * dots
                 
-                await processing_message.edit_text(
+                new_text = (
                     f"🔄 Обработка видео{animation}\n"
                     f"📊 Обрабатываю {total_copies} копий параллельно\n\n"
                     f"⚡ Это быстрее в {total_copies}x раз!\n"
                     f"⏳ Пожалуйста, подождите..."
                 )
+                
+                # Редактируем только если текст изменился
+                if new_text != last_text:
+                    try:
+                        await processing_message.edit_text(new_text)
+                        last_text = new_text
+                    except Exception as edit_error:
+                        # Если не удается отредактировать, пропускаем это обновление
+                        logger.warning(f"Не удалось отредактировать сообщение: {edit_error}")
+                        
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -428,7 +807,7 @@ class VideoBot:
                 break
 
     async def _process_single_copy(self, input_path: str, output_path: str, 
-                                 copy_index: int, add_frames: bool, compress: bool, change_resolution: bool):
+                                 copy_index: int, add_frames: bool, compress: bool, change_resolution: bool, user_id: int = None):
         """Обработка одной копии видео"""
         try:
             # Используем ThreadPoolExecutor вместо ProcessPoolExecutor для избежания проблем с pickle
@@ -442,7 +821,7 @@ class VideoBot:
                 loop.run_in_executor(
                     None,  # Используем стандартный ThreadPoolExecutor
                     self._process_video_copy_wrapper,
-                    input_path, output_path, copy_index, add_frames, compress, change_resolution
+                    input_path, output_path, copy_index, add_frames, compress, change_resolution, user_id
                 ),
                 timeout=timeout_seconds
             )
@@ -457,7 +836,7 @@ class VideoBot:
             return False
 
     def _process_video_copy_wrapper(self, input_path: str, output_path: str, 
-                                  copy_index: int, add_frames: bool, compress: bool, change_resolution: bool):
+                                  copy_index: int, add_frames: bool, compress: bool, change_resolution: bool, user_id: int = None):
         """Обертка для функции обработки видео"""
         from video_processor import process_video_copy_new
         
@@ -468,22 +847,244 @@ class VideoBot:
         # Создаем директорию для выходного файла если не существует
         os.makedirs(os.path.dirname(abs_output_path), exist_ok=True)
         
-        # Вызываем функцию обработки
-        return process_video_copy_new(abs_input_path, abs_output_path, copy_index, add_frames, compress, change_resolution)
+        # Вызываем функцию обработки с user_id для поддержки отмены
+        return process_video_copy_new(abs_input_path, abs_output_path, copy_index, add_frames, compress, change_resolution, user_id)
 
     def _read_video_file(self, video_path: str):
         """Синхронная функция для чтения видеофайла"""
         with open(video_path, 'rb') as video_file:
             return video_file.read()
 
-    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отмена операции"""
-        user_id = update.effective_user.id
+    async def back_to_main(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возврат в главное меню"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
         if user_id in self.user_data:
             del self.user_data[user_id]
         
-        await update.message.reply_text("Операция отменена.")
+        welcome_text = (
+            "🎬 **Главное меню**\n\n"
+            "**Бот для уникализации видео** 🚀\n\n"
+            "📋 **Инструкция:**\n"
+            "1️⃣ Нажмите кнопку 'Уникализировать видео'\n"
+            "2️⃣ Отправьте видеофайл (до 50 МБ)\n"
+            "3️⃣ Выберите количество копий (1-3-6)\n"
+            "4️⃣ Выберите параметры обработки\n"
+            "5️⃣ Получите уникальные копии!\n\n"
+            "Готовы начать? 👇"
+        )
+        
+        keyboard = [[InlineKeyboardButton("🎬 Уникализировать видео", callback_data="main_menu_start")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            welcome_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
         return ConversationHandler.END
+
+    async def back_to_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возврат к загрузке видео"""
+        query = update.callback_query
+        await query.answer()
+        
+        await query.edit_message_text(
+            "📤 **Отправьте видеофайл для обработки**\n\n"
+            "📋 **Требования:**\n"
+            "• Размер файла: до 50 МБ\n"
+            "• Формат: MP4, AVI, MOV, MKV\n"
+            "• Длительность: до 10 минут\n\n"
+            "⬇️ Прикрепите видео к сообщению",
+            parse_mode='Markdown'
+        )
+        return WAITING_FOR_VIDEO
+
+    async def back_to_copies(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возврат к выбору количества копий"""
+        query = update.callback_query
+        await query.answer()
+        
+        keyboard = [
+            [InlineKeyboardButton("1 копия", callback_data="copies_1")],
+            [InlineKeyboardButton("3 копии", callback_data="copies_3")], 
+            [InlineKeyboardButton("6 копий", callback_data="copies_6")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")],
+            [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "✅ **Видео получено!**\n\n"
+            "📊 Выберите количество копий для создания:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return CHOOSING_COPIES
+
+    async def back_to_frames(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возврат к выбору рамок"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        if user_id not in self.user_data:
+            await query.edit_message_text("❌ Данные сессии утеряны. Начните заново с /start")
+            return ConversationHandler.END
+        
+        # Создаем кнопки для выбора рамок с навигацией
+        keyboard = [
+            [InlineKeyboardButton("🖼️ Добавить рамки", callback_data="frames_yes")],
+            [InlineKeyboardButton("📹 Без рамок", callback_data="frames_no")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_copies")],
+            [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        copies = self.user_data[user_id]['copies']
+        await query.edit_message_text(
+            f"📊 **Выбрано:** {copies} копий\n\n"
+            "🖼️ **Добавить цветные рамки к видео?**\n"
+            "Рамки помогают сделать каждую копию уникальной",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return CHOOSING_FRAMES
+
+    async def back_to_resolution(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Возврат к выбору разрешения"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        if user_id not in self.user_data:
+            await query.edit_message_text("❌ Данные сессии утеряны. Начните заново с /start")
+            return ConversationHandler.END
+        
+        # Создаем кнопки для выбора разрешения с навигацией
+        keyboard = [
+            [InlineKeyboardButton("📐 Изменить разрешение", callback_data="resolution_yes")],
+            [InlineKeyboardButton("📹 Оригинальное разрешение", callback_data="resolution_no")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_frames")],
+            [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        user_settings = self.user_data[user_id]
+        copies = user_settings['copies']
+        frames_text = "с рамками" if user_settings['add_frames'] else "без рамок"
+        
+        await query.edit_message_text(
+            f"📊 **Выбрано:** {copies} копий {frames_text}\n\n"
+            "📐 **Изменить разрешение видео?**\n"
+            "Изменение разрешения поможет сделать копии более уникальными",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return CHOOSING_RESOLUTION
+
+    async def restart_process(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Перезапуск процесса - возврат к главному меню"""
+        user_id = update.effective_user.id
+        
+        # Останавливаем активную обработку если есть
+        if user_id in self.active_processing_tasks:
+            self.active_processing_tasks[user_id].cancel()
+            del self.active_processing_tasks[user_id]
+        
+        # Очищаем данные пользователя
+        if user_id in self.user_data:
+            # Удаляем загруженное видео если есть
+            if 'video_path' in self.user_data[user_id]:
+                video_path = self.user_data[user_id]['video_path']
+                if os.path.exists(video_path):
+                    try:
+                        os.remove(video_path)
+                        logger.info(f"Удален файл: {video_path}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении файла {video_path}: {e}")
+            
+            del self.user_data[user_id]
+        
+        # Убираем клавиатуру и показываем сообщение о загрузке видео
+        reply_markup = ReplyKeyboardRemove()
+        
+        message_text = (
+            "📹 **Отправьте видеофайл для обработки**\n\n"
+            "📋 **Требования:**\n"
+            "• Размер файла: до 50 МБ\n"
+            "• Формат: MP4, AVI, MOV, MKV\n"
+            "• Длительность: до 10 минут\n\n"
+            "Просто прикрепите видео к сообщению 👇"
+        )
+        
+        # Проверяем, есть ли callback_query или обычное сообщение
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                message_text,
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        
+        return WAITING_FOR_VIDEO
+
+    async def start_final_processing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Запуск финальной обработки видео"""
+        query = update.callback_query
+        await query.answer()  # Убираем индикатор загрузки
+        
+        user_id = update.effective_user.id
+        
+        if user_id not in self.user_data:
+            await query.edit_message_text("❌ Данные сессии утеряны. Начните заново с /start")
+            return ConversationHandler.END
+        
+        # Получаем все параметры
+        user_settings = self.user_data[user_id]
+        copies = user_settings['copies']
+        add_frames = user_settings['add_frames']
+        change_resolution = user_settings['change_resolution']
+        compress = user_settings['compress']
+        
+        compress_text = "со сжатием" if compress else "без сжатия"
+        frames_text = "с рамками" if add_frames else "без рамок"
+        resolution_text = "изменить разрешение" if change_resolution else "оригинальное разрешение"
+        
+        # Отправляем сообщение о начале обработки
+        processing_message = await query.edit_message_text(
+            f"🔄 Запускаю обработку видео...\n"
+            f"📊 Параметры:\n"
+            f"• Копий: {copies}\n"
+            f"• Рамки: {frames_text}\n"
+            f"• Разрешение: {resolution_text}\n"
+            f"• Сжатие: {compress_text}\n\n"
+            f"⏳ Подготавливаю к обработке..."
+        )
+        
+        # Запускаем обработку в фоновом режиме
+        task = asyncio.create_task(
+            self._process_video_async(
+                user_id, 
+                user_settings, 
+                processing_message, 
+                context,
+                update.effective_chat.id
+            )
+        )
+        
+        # Сохраняем задачу для возможной отмены
+        self.active_processing_tasks[user_id] = task
+        
+        # Возвращаем состояние ожидания видео, чтобы бот мог принимать новые видео
+        return WAITING_FOR_VIDEO
 
 def main():
     """Запуск бота"""
@@ -491,34 +1092,91 @@ def main():
         print("Ошибка: BOT_TOKEN не найден в переменных окружения!")
         return
     
-    # Создаем экземпляр бота
-    bot = VideoBot()
+    # Очищаем старые временные файлы при запуске
+    from video_processor import cleanup_old_temp_files
+    from config import TEMP_DIR
+    cleanup_old_temp_files(TEMP_DIR)
     
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Создаем ConversationHandler для обработки видео
+    # Создаем экземпляр бота
+    video_bot = VideoBot()
+    
+    # Настраиваем обработчик разговора
     conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(bot.start_processing, pattern="^start_processing$")],
+        entry_points=[
+            CommandHandler('start', video_bot.start)
+        ],
         states={
-            CHOOSING_COPIES: [CallbackQueryHandler(bot.choose_copies, pattern="^copies_")],
-            CHOOSING_FRAMES: [CallbackQueryHandler(bot.choose_frames, pattern="^frames_")],
-            CHOOSING_RESOLUTION: [CallbackQueryHandler(bot.choose_resolution, pattern="^resolution_")],
-            CHOOSING_COMPRESSION: [CallbackQueryHandler(bot.choose_compression, pattern="^compress_")],
+            MAIN_MENU: [
+                MessageHandler(filters.TEXT & filters.Regex("^🎬 Уникализировать видео$"), video_bot.main_menu_handler),
+                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^start_processing$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в MAIN_MENU
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в MAIN_MENU
+            ],
+            WAITING_FOR_VIDEO: [
+                MessageHandler(filters.VIDEO, video_bot.handle_video),
+                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^start_processing$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в WAITING_FOR_VIDEO
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в WAITING_FOR_VIDEO
+            ],
+            PARAMETERS_MENU: [
+                CallbackQueryHandler(video_bot.choose_copies_menu, pattern="^choose_copies$"),
+                CallbackQueryHandler(video_bot.toggle_frames, pattern="^toggle_frames$"),
+                CallbackQueryHandler(video_bot.toggle_resolution, pattern="^toggle_resolution$"),
+                CallbackQueryHandler(video_bot.toggle_compression, pattern="^toggle_compression$"),
+                CallbackQueryHandler(video_bot.start_final_processing, pattern="^start_processing$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в PARAMETERS_MENU
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в PARAMETERS_MENU
+            ],
+            CHOOSING_COPIES: [
+                CallbackQueryHandler(video_bot.choose_copies, pattern="^copies_[136]$"),
+                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^back_to_parameters$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_COPIES
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_COPIES
+            ],
+            CHOOSING_FRAMES: [
+                CallbackQueryHandler(video_bot.choose_frames, pattern="^frames_(yes|no)$"),
+                CallbackQueryHandler(video_bot.back_to_copies, pattern="^back_to_copies$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_FRAMES
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_FRAMES
+            ],
+            CHOOSING_RESOLUTION: [
+                CallbackQueryHandler(video_bot.choose_resolution, pattern="^resolution_(yes|no)$"),
+                CallbackQueryHandler(video_bot.back_to_frames, pattern="^back_to_frames$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_RESOLUTION
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_RESOLUTION
+            ],
+            CHOOSING_COMPRESSION: [
+                CallbackQueryHandler(video_bot.choose_compression, pattern="^compress_(yes|no)$"),
+                CallbackQueryHandler(video_bot.back_to_resolution, pattern="^back_to_resolution$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_COMPRESSION
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_COMPRESSION
+            ]
         },
-        fallbacks=[CommandHandler("cancel", bot.cancel)],
-        per_user=True,  # Важно для поддержки множественных пользователей
-        per_message=False  # Отключаем отслеживание per_message для CallbackQueryHandler
+        fallbacks=[
+            CommandHandler('start', video_bot.start),  # Добавляем /start в fallbacks для всех состояний
+            CommandHandler('help', video_bot.help_command)  # Добавляем /help в fallbacks для всех состояний
+        ]
     )
     
     # Добавляем обработчики
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(MessageHandler(filters.VIDEO, bot.handle_video))
     application.add_handler(conv_handler)
     
+    # Добавляем отдельный обработчик /start для случаев вне разговора
+    application.add_handler(CommandHandler('start', video_bot.start))
+    
+    # Добавляем обработчик команды /help
+    application.add_handler(CommandHandler('help', video_bot.help_command))
+    
     # Запускаем бота
-    print("Бот запущен...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Бот запущен")
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

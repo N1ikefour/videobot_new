@@ -13,6 +13,21 @@ from config import OUTPUT_DIR, TEMP_DIR
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
+def cleanup_old_temp_files(temp_dir: str):
+    """Очищает старые временные файлы старше 1 часа"""
+    try:
+        current_time = time.time()
+        for filename in os.listdir(temp_dir):
+            if filename.startswith('temp-audio-') and filename.endswith('.m4a'):
+                file_path = os.path.join(temp_dir, filename)
+                if os.path.isfile(file_path):
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age > 3600:  # 1 час = 3600 секунд
+                        os.remove(file_path)
+                        logger.info(f"Удален старый временный файл: {filename}")
+    except Exception as e:
+        logger.warning(f"Ошибка при очистке временных файлов: {e}")
+
 # Импортируем cv2 только если он нужен, иначе используем альтернативы
 try:
     import cv2
@@ -126,11 +141,17 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
     """Функция для обработки видео в отдельном процессе (обходит GIL)"""
     import os
     import logging
+    import gc
+    import time
     from moviepy.editor import VideoFileClip
     
     # Настраиваем логирование для процесса
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+    
+    video = None
+    modified_video = None
+    temp_audio_file = None
     
     try:
         logger.info(f"Процесс {os.getpid()}: Начинаю обработку {input_path}")
@@ -162,8 +183,14 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
             bitrate = None
             audio_codec = 'aac'
         
-        # Сохраняем видео
-        temp_audio_file = f"temp-audio-{copy_index}-{os.getpid()}.m4a"
+        # Создаем папку temp если не существует
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        
+        # Очищаем старые временные файлы
+        cleanup_old_temp_files(TEMP_DIR)
+        
+        # Создаем уникальное имя для временного аудио файла в папке temp
+        temp_audio_file = os.path.join(TEMP_DIR, f"temp-audio-{copy_index}-{int(time.time())}-{os.getpid()}.m4a")
         
         logger.info(f"Процесс {os.getpid()}: Сохраняю видео в {output_path}")
         
@@ -185,22 +212,39 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
             logger=None
         )
         
-        # Закрываем видео объекты
-        modified_video.close()
-        video.close()
-        
-        # Удаляем временный аудио файл если он остался
-        if os.path.exists(temp_audio_file):
-            try:
-                os.remove(temp_audio_file)
-            except:
-                pass
-        
         logger.info(f"Процесс {os.getpid()}: Обработка завершена успешно")
                 
     except Exception as e:
         logger.error(f"Процесс {os.getpid()}: Ошибка при обработке видео: {e}")
         raise
+        
+    finally:
+        # Принудительно закрываем все видео объекты
+        try:
+            if modified_video is not None:
+                modified_video.close()
+                del modified_video
+        except:
+            pass
+            
+        try:
+            if video is not None:
+                video.close()
+                del video
+        except:
+            pass
+        
+        # Удаляем временный аудио файл если он остался
+        if temp_audio_file and os.path.exists(temp_audio_file):
+            try:
+                time.sleep(0.5)  # Небольшая задержка
+                os.remove(temp_audio_file)
+                logger.info(f"Процесс {os.getpid()}: Удален временный аудио файл: {temp_audio_file}")
+            except Exception as e:
+                logger.warning(f"Процесс {os.getpid()}: Не удалось удалить временный аудио файл {temp_audio_file}: {e}")
+        
+        # Принудительная очистка памяти
+        gc.collect()
 
 
 def apply_unique_modifications(video, copy_index: int, add_frames: bool):
@@ -331,8 +375,11 @@ def add_frame_to_video(video, color, thickness):
             return None
 
 
-def process_video_copy_new(input_path: str, output_path: str, copy_index: int, add_frames: bool, compress: bool, change_resolution: bool):
+def process_video_copy_new(input_path: str, output_path: str, copy_index: int, add_frames: bool, compress: bool, change_resolution: bool, user_id: int = None):
     """Обрабатывает одну копию видео - функция для использования в ProcessPoolExecutor"""
+    video = None
+    modified_video = None
+    
     try:
         logger.info(f"Начинаю обработку копии {copy_index + 1}: {input_path} -> {output_path}")
         
@@ -379,17 +426,26 @@ def process_video_copy_new(input_path: str, output_path: str, copy_index: int, a
                 'audio_codec': 'aac'
             }
         
+        # Создаем папку temp если не существует
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        
+        # Очищаем старые временные файлы
+        cleanup_old_temp_files(TEMP_DIR)
+        
+        # Создаем уникальное имя для временного аудиофайла в папке temp
+        temp_audio_name = os.path.join(TEMP_DIR, f'temp-audio-{user_id}-{copy_index}.m4a' if user_id else f'temp-audio-{copy_index}.m4a')
+        
         # Сохраняем видео
         modified_video.write_videofile(
             output_path,
             **codec_settings,
-            temp_audiofile='temp-audio.m4a',
+            temp_audiofile=temp_audio_name,
             remove_temp=True,
             verbose=False,
             logger=None
         )
         
-        # Закрываем видео для освобождения памяти
+        # Закрываем видео объекты
         video.close()
         modified_video.close()
         
