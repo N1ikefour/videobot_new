@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+
+{% block title %}Панель управления - VideoBot Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">
+        <i class="fas fa-tachometer-alt me-2"></i>
+        Панель управления
+    </h1>
+    <div class="btn-toolbar mb-2 mb-md-0">
+        <button type="button" class="btn btn-outline-primary btn-custom" onclick="refreshStats()">
+            <i class="fas fa-sync-alt me-2"></i>
+            Обновить
+        </button>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4" id="statsCards">
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">
+                            Всего пользователей
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold" id="totalUsers">
+                            <div class="loading"></div>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-users fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card-success">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">
+                            Активных за 24ч
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold" id="active24h">
+                            <div class="loading"></div>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-user-check fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card-info">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">
+                            Видео обработано
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold" id="totalVideos">
+                            <div class="loading"></div>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-video fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card-warning">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs font-weight-bold text-uppercase mb-1">
+                            Заблокированных
+                        </div>
+                        <div class="h5 mb-0 font-weight-bold" id="bannedUsers">
+                            <div class="loading"></div>
+                        </div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-user-slash fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row mb-4">
+    <div class="col-lg-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-chart-line me-2"></i>
+                    Активность пользователей
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="activityChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-chart-pie me-2"></i>
+                    Статус пользователей
+                </h5>
+            </div>
+            <div class="card-body">
+                <canvas id="statusChart" width="400" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="fas fa-clock me-2"></i>
+                    Последняя активность
+                </h5>
+                <a href="{{ url_for('users') }}" class="btn btn-outline-primary btn-sm btn-custom">
+                    Все пользователи
+                </a>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="recentActivityTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Имя</th>
+                                <th>Последняя активность</th>
+                                <th>Действий</th>
+                                <th>Статус</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="5" class="text-center">
+                                    <div class="loading"></div>
+                                    Загрузка...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let activityChart, statusChart;
+
+// Загрузка статистики при загрузке страницы
+$(document).ready(function() {
+    loadStats();
+    loadRecentActivity();
+});
+
+function refreshStats() {
+    loadStats();
+    loadRecentActivity();
+}
+
+function loadStats() {
+    $.get('/api/stats')
+        .done(function(response) {
+            if (response.success) {
+                const stats = response.data;
+                
+                $('#totalUsers').text(stats.total_users || 0);
+                $('#active24h').text(stats.active_24h || 0);
+                $('#totalVideos').text(stats.total_videos || 0);
+                $('#bannedUsers').text(stats.banned_users || 0);
+                
+                // Обновляем графики
+                updateCharts(stats);
+            }
+        })
+        .fail(function() {
+            showError('Ошибка загрузки статистики');
+        });
+}
+
+function loadRecentActivity() {
+    $.get('/api/active_users?hours=24')
+        .done(function(response) {
+            if (response.success) {
+                updateRecentActivityTable(response.data);
+            }
+        })
+        .fail(function() {
+            showError('Ошибка загрузки активности');
+        });
+}
+
+function updateRecentActivityTable(users) {
+    const tbody = $('#recentActivityTable tbody');
+    tbody.empty();
+    
+    if (users.length === 0) {
+        tbody.append('<tr><td colspan="5" class="text-center text-muted">Нет активных пользователей</td></tr>');
+        return;
+    }
+    
+    users.slice(0, 10).forEach(user => {
+        const statusBadge = user.is_banned ? 
+            '<span class="badge bg-danger badge-status">Заблокирован</span>' :
+            '<span class="badge bg-success badge-status">Активен</span>';
+            
+        const row = `
+            <tr>
+                <td><code>${user.user_id}</code></td>
+                <td>${user.first_name || 'Не указано'}</td>
+                <td>${formatDateTime(user.last_activity)}</td>
+                <td><span class="badge bg-info badge-status">${user.activity_count}</span></td>
+                <td>${statusBadge}</td>
+            </tr>
+        `;
+        tbody.append(row);
+    });
+}
+
+function updateCharts(stats) {
+    // График активности
+    const activityCtx = document.getElementById('activityChart').getContext('2d');
+    
+    if (activityChart) {
+        activityChart.destroy();
+    }
+    
+    activityChart = new Chart(activityCtx, {
+        type: 'line',
+        data: {
+            labels: ['30 дней', '7 дней', '24 часа', 'Сейчас'],
+            datasets: [{
+                label: 'Активные пользователи',
+                data: [stats.active_30d || 0, stats.active_7d || 0, stats.active_24h || 0, stats.active_24h || 0],
+                borderColor: 'rgb(102, 126, 234)',
+                backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+    
+    // График статуса пользователей
+    const statusCtx = document.getElementById('statusChart').getContext('2d');
+    
+    if (statusChart) {
+        statusChart.destroy();
+    }
+    
+    const activeUsers = (stats.total_users || 0) - (stats.banned_users || 0);
+    
+    statusChart = new Chart(statusCtx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Активные', 'Заблокированные'],
+            datasets: [{
+                data: [activeUsers, stats.banned_users || 0],
+                backgroundColor: [
+                    'rgba(86, 171, 47, 0.8)',
+                    'rgba(245, 87, 108, 0.8)'
+                ],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                }
+            }
+        }
+    });
+}
+
+function formatDateTime(dateString) {
+    const date = new Date(dateString);
+    return date.toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Europe/Moscow'
+    });
+}
+
+function showError(message) {
+    const alert = `
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+    $('.main-content .pt-3').prepend(alert);
+}
+</script>
+{% endblock %}

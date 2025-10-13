@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 from config import BOT_TOKEN
 from video_processor import VideoProcessor, process_video_copy_new
+from database import db_manager
 
 # Настройка логирования
 logging.basicConfig(
@@ -36,6 +37,27 @@ class VideoBot:
         """Обработчик команды /start"""
         user_name = update.effective_user.first_name
         user_id = update.effective_user.id
+        username = update.effective_user.username
+        last_name = update.effective_user.last_name
+        
+        # Добавляем или обновляем пользователя в базе данных
+        db_manager.add_or_update_user(
+            user_id=user_id,
+            username=username,
+            first_name=user_name,
+            last_name=last_name
+        )
+        
+        # Логируем активность пользователя
+        db_manager.log_user_activity(user_id, 'start_command')
+        
+        # Проверяем, не забанен ли пользователь
+        if db_manager.is_user_banned(user_id):
+            await update.message.reply_text(
+                "❌ Ваш аккаунт заблокирован.\n"
+                "Обратитесь к администратору для разблокировки."
+            )
+            return ConversationHandler.END
         
         # Очищаем данные пользователя при старте
         if user_id in self.user_data:
@@ -355,9 +377,29 @@ class VideoBot:
         """Обработчик получения видео от пользователя"""
         user_id = update.effective_user.id
         
+        # Проверяем, не забанен ли пользователь
+        if db_manager.is_user_banned(user_id):
+            await update.message.reply_text(
+                "❌ Ваш аккаунт заблокирован.\n"
+                "Обратитесь к администратору для разблокировки."
+            )
+            return ConversationHandler.END
+        
         if update.message.video:
-            # Сохраняем информацию о видео
             video = update.message.video
+            
+            # Логируем загрузку видео
+            db_manager.log_user_activity(
+                user_id, 
+                'video_upload', 
+                {
+                    'file_size': video.file_size,
+                    'duration': video.duration,
+                    'file_id': video.file_id
+                }
+            )
+            
+            # Сохраняем информацию о видео
             self.user_data[user_id] = {
                 'video_file_id': video.file_id,
                 'video_file_name': f"video_{user_id}_{video.file_unique_id}.mp4",
@@ -559,6 +601,7 @@ class VideoBot:
         """Асинхронная обработка видео с промежуточными обновлениями"""
         input_path = None
         processed_videos = []
+        start_time = time.time()  # Засекаем время начала обработки
         
         # Используем семафор для ограничения количества одновременных обработок
         async with self.processing_semaphore:
@@ -635,6 +678,17 @@ class VideoBot:
                 # Удаляем входной файл
                 if input_path and os.path.exists(input_path):
                     os.remove(input_path)
+                
+                # Логируем успешную обработку видео
+                await db_manager.log_user_activity(
+                    user_id, 
+                    'video_processed', 
+                    {
+                        'copies_created': len(processed_videos),
+                        'processing_time': time.time() - start_time,
+                        'settings': user_settings
+                    }
+                )
                 
                 # Финальное сообщение о завершении
                 await processing_message.edit_text(
@@ -1086,6 +1140,292 @@ class VideoBot:
         # Возвращаем состояние ожидания видео, чтобы бот мог принимать новые видео
         return WAITING_FOR_VIDEO
 
+    # Админские команды
+    async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать статистику пользователей (только для админов)"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь админом
+        if not await db_manager.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав администратора")
+            return
+        
+        try:
+            stats = await db_manager.get_general_stats()
+            
+            stats_text = f"""📊 **Статистика бота**
+
+👥 **Пользователи:**
+• Всего: {stats['total_users']}
+• Активных за 24ч: {stats['active_24h']}
+• Активных за 7 дней: {stats['active_7d']}
+• Активных за 30 дней: {stats['active_30d']}
+
+🎬 **Видео:**
+• Всего обработано: {stats['total_videos']}
+• За сегодня: {stats['videos_today']}
+• За неделю: {stats['videos_week']}
+
+🚫 **Заблокированные:** {stats['banned_users']}
+"""
+            
+            await update.message.reply_text(stats_text, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики: {e}")
+            await update.message.reply_text("❌ Ошибка при получении статистики")
+
+    async def admin_ban(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Заблокировать пользователя (только для админов)"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь админом
+        if not await db_manager.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав администратора")
+            return
+        
+        # Проверяем аргументы команды
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Укажите ID пользователя для блокировки\n"
+                "Пример: `/admin_ban 123456789`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            target_user_id = int(context.args[0])
+            reason = " ".join(context.args[1:]) if len(context.args) > 1 else "Нарушение правил"
+            
+            # Проверяем, не пытается ли админ заблокировать себя
+            if target_user_id == user_id:
+                await update.message.reply_text("❌ Вы не можете заблокировать себя")
+                return
+            
+            # Проверяем, не является ли цель тоже админом
+            if await db_manager.is_admin(target_user_id):
+                await update.message.reply_text("❌ Нельзя заблокировать другого администратора")
+                return
+            
+            # Блокируем пользователя
+            success = await db_manager.ban_user(target_user_id, user_id, reason)
+            
+            if success:
+                await update.message.reply_text(
+                    f"✅ Пользователь {target_user_id} заблокирован\n"
+                    f"📝 Причина: {reason}"
+                )
+                
+                # Логируем действие админа
+                await db_manager.log_admin_action(user_id, 'ban_user', {
+                    'target_user_id': target_user_id,
+                    'reason': reason
+                })
+            else:
+                await update.message.reply_text("❌ Ошибка при блокировке пользователя")
+                
+        except ValueError:
+            await update.message.reply_text("❌ Неверный ID пользователя")
+        except Exception as e:
+            logger.error(f"Ошибка при блокировке пользователя: {e}")
+            await update.message.reply_text("❌ Ошибка при блокировке пользователя")
+
+    async def admin_unban(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Разблокировать пользователя (только для админов)"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь админом
+        if not await db_manager.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав администратора")
+            return
+        
+        # Проверяем аргументы команды
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Укажите ID пользователя для разблокировки\n"
+                "Пример: `/admin_unban 123456789`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            target_user_id = int(context.args[0])
+            
+            # Разблокируем пользователя
+            success = await db_manager.unban_user(target_user_id)
+            
+            if success:
+                await update.message.reply_text(f"✅ Пользователь {target_user_id} разблокирован")
+                
+                # Логируем действие админа
+                await db_manager.log_admin_action(user_id, 'unban_user', {
+                    'target_user_id': target_user_id
+                })
+            else:
+                await update.message.reply_text("❌ Ошибка при разблокировке пользователя")
+                
+        except ValueError:
+            await update.message.reply_text("❌ Неверный ID пользователя")
+        except Exception as e:
+            logger.error(f"Ошибка при разблокировке пользователя: {e}")
+            await update.message.reply_text("❌ Ошибка при разблокировке пользователя")
+
+    async def admin_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать список всех пользователей (только для админов)"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь админом
+        if not await db_manager.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав администратора")
+            return
+        
+        try:
+            # Получаем параметры пагинации
+            page = 1
+            if context.args and context.args[0].isdigit():
+                page = int(context.args[0])
+            
+            limit = 10
+            offset = (page - 1) * limit
+            
+            users = await db_manager.get_all_users(limit, offset)
+            
+            if not users:
+                await update.message.reply_text("👥 Пользователи не найдены")
+                return
+            
+            users_text = f"👥 **Пользователи (страница {page}):**\n\n"
+            
+            for user in users:
+                status = "🚫 Заблокирован" if user['is_banned'] else "✅ Активен"
+                users_text += f"**ID:** `{user['user_id']}`\n"
+                users_text += f"**Имя:** {user['first_name'] or 'Не указано'}\n"
+                users_text += f"**Username:** @{user['username'] or 'Не указан'}\n"
+                users_text += f"**Статус:** {status}\n"
+                users_text += f"**Видео:** {user['videos_processed']}\n"
+                users_text += f"**Регистрация:** {user['created_at'][:10]}\n"
+                users_text += "─────────────\n"
+            
+            users_text += f"\n📄 Страница {page} | Используйте `/admin_users {page + 1}` для следующей страницы"
+            
+            await update.message.reply_text(users_text, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка пользователей: {e}")
+            await update.message.reply_text("❌ Ошибка при получении списка пользователей")
+
+    async def admin_active_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать активных пользователей (только для админов)"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь админом
+        if not await db_manager.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав администратора")
+            return
+        
+        try:
+            # Получаем период (по умолчанию 24 часа)
+            hours = 24
+            if context.args and context.args[0].isdigit():
+                hours = int(context.args[0])
+                if hours > 720:  # Максимум 30 дней
+                    hours = 720
+            
+            active_users = await db_manager.get_active_users(hours)
+            
+            if not active_users:
+                await update.message.reply_text(f"👥 Активных пользователей за последние {hours} часов не найдено")
+                return
+            
+            users_text = f"👥 **Активные пользователи за {hours}ч:**\n\n"
+            
+            for user in active_users[:20]:  # Показываем только первые 20
+                users_text += f"**ID:** `{user['user_id']}`\n"
+                users_text += f"**Имя:** {user['first_name'] or 'Не указано'}\n"
+                users_text += f"**Последняя активность:** {user['last_activity'][:16]}\n"
+                users_text += f"**Действий:** {user['activity_count']}\n"
+                users_text += "─────────────\n"
+            
+            if len(active_users) > 20:
+                users_text += f"\n... и еще {len(active_users) - 20} пользователей"
+            
+            users_text += f"\n📊 Всего активных: {len(active_users)}"
+            
+            await update.message.reply_text(users_text, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении активных пользователей: {e}")
+            await update.message.reply_text("❌ Ошибка при получении активных пользователей")
+
+    async def admin_make_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Назначить пользователя администратором (только для супер-админов)"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь супер-админом (первый админ в системе)
+        # Для простоты, можно захардкодить ID создателя бота
+        SUPER_ADMIN_ID = 454002721  # Замените на ваш Telegram ID
+        
+        if user_id != SUPER_ADMIN_ID:
+            await update.message.reply_text("❌ Только супер-администратор может назначать админов")
+            return
+        
+        # Проверяем аргументы команды
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Укажите ID пользователя для назначения админом\n"
+                "Пример: `/admin_make_admin 123456789`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            target_user_id = int(context.args[0])
+            
+            # Назначаем админа
+            success = await db_manager.make_admin(target_user_id, user_id)
+            
+            if success:
+                await update.message.reply_text(f"✅ Пользователь {target_user_id} назначен администратором")
+                
+                # Логируем действие
+                await db_manager.log_admin_action(user_id, 'make_admin', {
+                    'target_user_id': target_user_id
+                })
+            else:
+                await update.message.reply_text("❌ Ошибка при назначении администратора")
+                
+        except ValueError:
+            await update.message.reply_text("❌ Неверный ID пользователя")
+        except Exception as e:
+            logger.error(f"Ошибка при назначении админа: {e}")
+            await update.message.reply_text("❌ Ошибка при назначении администратора")
+
+    async def admin_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать список админских команд"""
+        user_id = update.effective_user.id
+        
+        # Проверяем, является ли пользователь админом
+        if not await db_manager.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав администратора")
+            return
+        
+        help_text = """🔧 **Команды администратора:**
+
+📊 `/admin_stats` - Общая статистика бота
+👥 `/admin_users [страница]` - Список всех пользователей
+🟢 `/admin_active_users [часы]` - Активные пользователи
+🚫 `/admin_ban <ID> [причина]` - Заблокировать пользователя
+✅ `/admin_unban <ID>` - Разблокировать пользователя
+❓ `/admin_help` - Эта справка
+
+**Примеры:**
+• `/admin_users 2` - 2-я страница пользователей
+• `/admin_active_users 48` - активные за 48 часов
+• `/admin_ban 123456789 спам` - заблокировать за спам
+"""
+        
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+
 def main():
     """Запуск бота"""
     if not BOT_TOKEN:
@@ -1173,6 +1513,15 @@ def main():
     
     # Добавляем обработчик команды /help
     application.add_handler(CommandHandler('help', video_bot.help_command))
+    
+    # Админские команды
+    application.add_handler(CommandHandler("admin_stats", video_bot.admin_stats))
+    application.add_handler(CommandHandler("admin_ban", video_bot.admin_ban))
+    application.add_handler(CommandHandler("admin_unban", video_bot.admin_unban))
+    application.add_handler(CommandHandler("admin_users", video_bot.admin_users))
+    application.add_handler(CommandHandler("admin_active_users", video_bot.admin_active_users))
+    application.add_handler(CommandHandler("admin_make_admin", video_bot.admin_make_admin))
+    application.add_handler(CommandHandler("admin_help", video_bot.admin_help))
     
     # Запускаем бота
     logger.info("Бот запущен")
