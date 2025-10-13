@@ -60,12 +60,55 @@ class VideoBot:
             one_time_keyboard=False
         )
         
+        # Проверяем, есть ли уже активный разговор
+        if context.user_data.get('conversation_state'):
+            # Если есть активный разговор, сбрасываем его
+            context.user_data.clear()
+        
         await update.message.reply_text(
             welcome_text,
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
         return MAIN_MENU
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /help"""
+        help_text = (
+            "🆘 **Помощь по использованию бота**\n\n"
+            
+            "📋 **Основные команды:**\n"
+            "• `/start` - Начать работу с ботом\n"
+            "• `/help` - Показать эту справку\n\n"
+            
+            "🎬 **Как уникализировать видео:**\n"
+            "1️⃣ Нажмите кнопку '🎬 Уникализировать видео'\n"
+            "2️⃣ Отправьте видеофайл (до 50 МБ)\n"
+            "3️⃣ Выберите параметры:\n"
+            "   • Количество копий (1-3-6)\n"
+            "   • Добавить цветные рамки\n"
+            "   • Изменить разрешение\n"
+            "   • Сжать видео\n"
+            "4️⃣ Получите уникальные копии!\n\n"
+            
+            "📋 **Требования к видео:**\n"
+            "• Размер: до 50 МБ\n"
+            "• Формат: MP4, AVI, MOV, MKV\n"
+            "• Длительность: до 10 минут\n\n"
+            
+            "⚡ **Особенности:**\n"
+            "• Параллельная обработка (быстро!)\n"
+            "• Автоматическая очистка файлов\n"
+            "• Поддержка множества пользователей\n\n"
+            
+            "❓ **Проблемы?**\n"
+            "Напишите `/start` для перезапуска бота"
+        )
+        
+        await update.message.reply_text(
+            help_text,
+            parse_mode='Markdown'
+        )
 
     async def main_menu_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик главного меню"""
@@ -203,8 +246,8 @@ class VideoBot:
         # Создаем inline кнопки для выбора количества копий
         keyboard = [
             [InlineKeyboardButton("1 копия", callback_data="copies_1")],
-            [InlineKeyboardButton("2 копии", callback_data="copies_2")],
             [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+            [InlineKeyboardButton("6 копий", callback_data="copies_6")],
             [InlineKeyboardButton("🔙 Назад к параметрам", callback_data="back_to_parameters")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -353,8 +396,8 @@ class VideoBot:
         # Сразу переходим к выбору количества копий, так как видео уже получено
         keyboard = [
             [InlineKeyboardButton("1 копия", callback_data="copies_1")],
-            [InlineKeyboardButton("2 копии", callback_data="copies_2")],
-            [InlineKeyboardButton("3 копии", callback_data="copies_3")]
+            [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+            [InlineKeyboardButton("6 копий", callback_data="copies_6")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -376,8 +419,8 @@ class VideoBot:
             # Создаем кнопки для выбора количества копий
             keyboard = [
                 [InlineKeyboardButton("1 копия", callback_data="copies_1")],
-                [InlineKeyboardButton("2 копии", callback_data="copies_2")],
-                [InlineKeyboardButton("3 копии", callback_data="copies_3")]
+                [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+                [InlineKeyboardButton("6 копий", callback_data="copies_6")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -827,7 +870,7 @@ class VideoBot:
             "📋 **Инструкция:**\n"
             "1️⃣ Нажмите кнопку 'Уникализировать видео'\n"
             "2️⃣ Отправьте видеофайл (до 50 МБ)\n"
-            "3️⃣ Выберите количество копий (1-3)\n"
+            "3️⃣ Выберите количество копий (1-3-6)\n"
             "4️⃣ Выберите параметры обработки\n"
             "5️⃣ Получите уникальные копии!\n\n"
             "Готовы начать? 👇"
@@ -866,8 +909,8 @@ class VideoBot:
         
         keyboard = [
             [InlineKeyboardButton("1 копия", callback_data="copies_1")],
-            [InlineKeyboardButton("2 копии", callback_data="copies_2")], 
-            [InlineKeyboardButton("3 копии", callback_data="copies_3")],
+            [InlineKeyboardButton("3 копии", callback_data="copies_3")], 
+            [InlineKeyboardButton("6 копий", callback_data="copies_6")],
             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")],
             [InlineKeyboardButton("🔄 Начать заново", callback_data="restart_process")]
         ]
@@ -1049,6 +1092,11 @@ def main():
         print("Ошибка: BOT_TOKEN не найден в переменных окружения!")
         return
     
+    # Очищаем старые временные файлы при запуске
+    from video_processor import cleanup_old_temp_files
+    from config import TEMP_DIR
+    cleanup_old_temp_files(TEMP_DIR)
+    
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -1063,11 +1111,15 @@ def main():
         states={
             MAIN_MENU: [
                 MessageHandler(filters.TEXT & filters.Regex("^🎬 Уникализировать видео$"), video_bot.main_menu_handler),
-                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^start_processing$")
+                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^start_processing$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в MAIN_MENU
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в MAIN_MENU
             ],
             WAITING_FOR_VIDEO: [
                 MessageHandler(filters.VIDEO, video_bot.handle_video),
-                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^start_processing$")
+                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^start_processing$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в WAITING_FOR_VIDEO
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в WAITING_FOR_VIDEO
             ],
             PARAMETERS_MENU: [
                 CallbackQueryHandler(video_bot.choose_copies_menu, pattern="^choose_copies$"),
@@ -1075,18 +1127,52 @@ def main():
                 CallbackQueryHandler(video_bot.toggle_resolution, pattern="^toggle_resolution$"),
                 CallbackQueryHandler(video_bot.toggle_compression, pattern="^toggle_compression$"),
                 CallbackQueryHandler(video_bot.start_final_processing, pattern="^start_processing$"),
-                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$")
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в PARAMETERS_MENU
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в PARAMETERS_MENU
             ],
             CHOOSING_COPIES: [
-                CallbackQueryHandler(video_bot.choose_copies, pattern="^copies_[123]$"),
-                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^back_to_parameters$")
+                CallbackQueryHandler(video_bot.choose_copies, pattern="^copies_[136]$"),
+                CallbackQueryHandler(video_bot.show_parameters_menu, pattern="^back_to_parameters$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_COPIES
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_COPIES
+            ],
+            CHOOSING_FRAMES: [
+                CallbackQueryHandler(video_bot.choose_frames, pattern="^frames_(yes|no)$"),
+                CallbackQueryHandler(video_bot.back_to_copies, pattern="^back_to_copies$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_FRAMES
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_FRAMES
+            ],
+            CHOOSING_RESOLUTION: [
+                CallbackQueryHandler(video_bot.choose_resolution, pattern="^resolution_(yes|no)$"),
+                CallbackQueryHandler(video_bot.back_to_frames, pattern="^back_to_frames$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_RESOLUTION
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_RESOLUTION
+            ],
+            CHOOSING_COMPRESSION: [
+                CallbackQueryHandler(video_bot.choose_compression, pattern="^compress_(yes|no)$"),
+                CallbackQueryHandler(video_bot.back_to_resolution, pattern="^back_to_resolution$"),
+                CallbackQueryHandler(video_bot.restart_process, pattern="^restart_process$"),
+                CommandHandler('start', video_bot.start),  # Добавляем /start в CHOOSING_COMPRESSION
+                CommandHandler('help', video_bot.help_command)  # Добавляем /help в CHOOSING_COMPRESSION
             ]
         },
-        fallbacks=[]
+        fallbacks=[
+            CommandHandler('start', video_bot.start),  # Добавляем /start в fallbacks для всех состояний
+            CommandHandler('help', video_bot.help_command)  # Добавляем /help в fallbacks для всех состояний
+        ]
     )
     
     # Добавляем обработчики
     application.add_handler(conv_handler)
+    
+    # Добавляем отдельный обработчик /start для случаев вне разговора
+    application.add_handler(CommandHandler('start', video_bot.start))
+    
+    # Добавляем обработчик команды /help
+    application.add_handler(CommandHandler('help', video_bot.help_command))
     
     # Запускаем бота
     logger.info("Бот запущен")
