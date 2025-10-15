@@ -3,7 +3,7 @@
 ## 📋 Обзор системы
 
 **Что это:** Веб-админ панель для управления Telegram ботом  
-**Технологии:** Flask + SQLite + Bootstrap + Chart.js  
+**Технологии:** Flask + PostgreSQL + Bootstrap + Chart.js  
 **Сервер:** 109.196.98.222 (тот же где бот)  
 **Порт:** 5000 (или любой другой)
 
@@ -36,10 +36,10 @@ ssh root@109.196.98.222
 /home/videobot/videobot_new/
 ├── bot.py                 # Telegram бот
 ├── admin_panel.py         # Веб админ-панель ← НОВОЕ
-├── database.py            # Менеджер БД ← ОБНОВЛЕНО
-├── config.py
+├── database_postgres.py   # Менеджер PostgreSQL БД ← ОБНОВЛЕНО
+├── setup_postgres.py      # Настройка PostgreSQL ← НОВОЕ
+├── config.py              # Конфигурация
 ├── .env                   # Переменные окружения ← ДОБАВИМ НАСТРОЙКИ
-├── bot_database.db        # SQLite база ← СОЗДАСТСЯ АВТОМАТИЧЕСКИ
 ├── templates/             # HTML шаблоны ← НОВОЕ
 │   ├── base.html
 │   ├── login.html
@@ -66,8 +66,11 @@ cd D:\Проекты\finally_videobot\finnaly_videoBot
 # Загрузите админ-панель
 scp admin_panel.py root@109.196.98.222:/home/videobot/videobot_new/
 
-# Загрузите обновленный database.py
-scp database.py root@109.196.98.222:/home/videobot/videobot_new/
+# Загрузите PostgreSQL модуль
+scp database_postgres.py root@109.196.98.222:/home/videobot/videobot_new/
+
+# Загрузите настройку PostgreSQL
+scp setup_postgres.py root@109.196.98.222:/home/videobot/videobot_new/
 
 # Загрузите templates
 scp -r templates root@109.196.98.222:/home/videobot/videobot_new/
@@ -86,7 +89,24 @@ git pull
 
 ---
 
-## 🔧 Шаг 2: Установка зависимостей
+## 🔧 Шаг 2: Установка PostgreSQL и зависимостей
+
+### 2.1 Установка PostgreSQL
+
+```bash
+# Устанавливаем PostgreSQL
+sudo apt update
+sudo apt install postgresql postgresql-contrib -y
+
+# Запускаем PostgreSQL
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Настраиваем пароль для postgres
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'your_strong_password';"
+```
+
+### 2.2 Установка Python зависимостей
 
 ```bash
 # Переходим в директорию бота
@@ -95,14 +115,16 @@ cd /home/videobot/videobot_new
 # Активируем виртуальное окружение
 source venv/bin/activate
 
-# Устанавливаем Flask и другие зависимости для админ-панели
-pip install flask
-pip install chart.js  # Для графиков (опционально)
+# Устанавливаем зависимости для PostgreSQL и админ-панели
+pip install psycopg2-binary sqlalchemy flask
 
 # Проверяем что установлено
-pip list | grep -i flask
+pip list | grep -E "flask|psycopg2|sqlalchemy"
 
-# Должно показать: Flask 3.x.x
+# Должно показать:
+# Flask 3.x.x
+# psycopg2-binary 2.x.x
+# SQLAlchemy 2.x.x
 ```
 
 ---
@@ -114,18 +136,24 @@ pip list | grep -i flask
 nano /home/videobot/videobot_new/.env
 ```
 
-**Добавьте в конец файла:**
+**Добавьте в файл (или обновите существующий):**
 
 ```bash
+# === TELEGRAM BOT ===
+BOT_TOKEN=your_bot_token_here
+
+# === POSTGRESQL DATABASE ===
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=videobot_db
+DB_USER=videobot_user
+DB_PASSWORD=videobot_password_123
+DB_ADMIN_USER=postgres
+DB_ADMIN_PASSWORD=your_strong_password
+
 # === НАСТРОЙКИ АДМИН-ПАНЕЛИ ===
-
-# Секретный ключ для сессий (ОБЯЗАТЕЛЬНО СМЕНИТЕ!)
 ADMIN_SECRET_KEY=izmenyat_etot_klyuch_na_unikalniy_123456789
-
-# Логин администратора
 ADMIN_USERNAME=admin
-
-# Пароль администратора (ОБЯЗАТЕЛЬНО СМЕНИТЕ!)
 ADMIN_PASSWORD=secure_password_2025
 ```
 
@@ -133,7 +161,7 @@ ADMIN_PASSWORD=secure_password_2025
 
 ---
 
-## 🚀 Шаг 4: Первый запуск (тестирование)
+## 🗄️ Шаг 4: Настройка базы данных PostgreSQL
 
 ```bash
 # Переходим в директорию
@@ -142,6 +170,18 @@ cd /home/videobot/videobot_new
 # Активируем venv если не активировали
 source venv/bin/activate
 
+# Настраиваем PostgreSQL базу данных
+python3 setup_postgres.py
+
+# Должно показать:
+# ✅ База данных videobot_db создана
+# ✅ Пользователь videobot_user создан
+# ✅ Права предоставлены
+```
+
+## 🚀 Шаг 5: Первый запуск (тестирование)
+
+```bash
 # Запускаем админ-панель для теста
 python3 admin_panel.py
 ```
@@ -157,7 +197,7 @@ python3 admin_panel.py
 
 ---
 
-## 🔄 Шаг 5: Запуск через PM2 (постоянная работа)
+## 🔄 Шаг 6: Запуск через PM2 (постоянная работа)
 
 ```bash
 # Останавливаем тестовый запуск (если не остановили)
@@ -188,7 +228,7 @@ pm2 list
 
 ---
 
-## 🌐 Шаг 6: Доступ к админ-панели
+## 🌐 Шаг 7: Доступ к админ-панели
 
 ### Вариант 1: Прямой доступ по IP и порту
 
@@ -254,7 +294,7 @@ sudo systemctl restart nginx
 
 ---
 
-## 🔒 Шаг 7: Открытие порта (если нужно)
+## 🔒 Шаг 8: Открытие порта (если нужно)
 
 Если админ-панель не открывается извне:
 
@@ -272,7 +312,7 @@ sudo ufw allow 443  # Для HTTPS
 
 ---
 
-## 🔑 Шаг 8: Первый вход
+## 🔑 Шаг 9: Первый вход
 
 1. **Откройте браузер**
 2. **Перейдите:** `http://109.196.98.222:5000` (или `http://109.196.98.222` если через Nginx)
@@ -446,28 +486,31 @@ nano /home/videobot/videobot_new/.env
 pm2 restart admin-panel
 ```
 
-### Проблема 4: База данных не создаётся
+### Проблема 4: PostgreSQL база данных не создаётся
 
 ```bash
-# Проверьте файл базы
-ls -la /home/videobot/videobot_new/bot_database.db
+# Проверьте статус PostgreSQL
+sudo systemctl status postgresql
 
-# Если нет - создайте вручную запустив Python
+# Проверьте подключение
+sudo -u postgres psql -c "\l" | grep videobot_db
+
+# Если базы нет - запустите настройку
 cd /home/videobot/videobot_new
 source venv/bin/activate
-python3 -c "from database import db_manager; print('DB initialized')"
+python3 setup_postgres.py
 
-# Проверьте права
-chmod 664 /home/videobot/videobot_new/bot_database.db
+# Проверьте подключение к базе
+python3 -c "from database_postgres import DatabaseManager; db = DatabaseManager(); print('DB connected')"
 ```
 
-### Проблема 5: "ModuleNotFoundError: No module named 'flask'"
+### Проблема 5: "ModuleNotFoundError: No module named 'psycopg2' или 'flask'"
 
 ```bash
-# Активируйте venv и установите Flask
+# Активируйте venv и установите зависимости
 cd /home/videobot/videobot_new
 source venv/bin/activate
-pip install flask
+pip install psycopg2-binary sqlalchemy flask
 deactivate
 
 # Перезапустите с правильным интерпретатором
@@ -490,11 +533,14 @@ echo "" && \
 echo "=== ПОРТЫ ===" && \
 sudo netstat -tlnp | grep :5000 && \
 echo "" && \
-echo "=== БАЗА ДАННЫХ ===" && \
-ls -lh /home/videobot/videobot_new/bot_database.db && \
+echo "=== POSTGRESQL ===" && \
+sudo systemctl status postgresql --no-pager && \
 echo "" && \
-echo "=== FLASK ===" && \
-source /home/videobot/videobot_new/venv/bin/activate && pip list | grep Flask && deactivate
+echo "=== БАЗА ДАННЫХ ===" && \
+sudo -u postgres psql -c "\l" | grep videobot_db && \
+echo "" && \
+echo "=== FLASK И ЗАВИСИМОСТИ ===" && \
+source /home/videobot/videobot_new/venv/bin/activate && pip list | grep -E "flask|psycopg2|sqlalchemy" && deactivate
 ```
 
 ---
@@ -551,7 +597,7 @@ sudo systemctl reload nginx
 
 Чтобы бот записывал данные в базу, нужно обновить `bot.py`:
 
-### 1. Импортируйте database в bot.py
+### 1. Импортируйте database_postgres в bot.py
 
 ```bash
 nano /home/videobot/videobot_new/bot.py
@@ -560,7 +606,8 @@ nano /home/videobot/videobot_new/bot.py
 **Добавьте в начало файла:**
 
 ```python
-from database import db_manager
+from database_postgres import DatabaseManager
+db_manager = DatabaseManager()
 ```
 
 ### 2. Добавьте логирование пользователей
@@ -638,7 +685,8 @@ pm2 logs videobot
 | Редактировать настройки | `nano .env`                           |
 | Проверить порт          | `sudo netstat -tlnp \| grep :5000`    |
 | Открыть порт            | `sudo ufw allow 5000`                 |
-| Проверить БД            | `ls -lh bot_database.db`              |
+| Проверить PostgreSQL    | `sudo systemctl status postgresql`    |
+| Проверить БД            | `sudo -u postgres psql -c "\l"`       |
 | Обновить из git         | `git pull && pm2 restart admin-panel` |
 
 ---
@@ -654,9 +702,11 @@ pm2 logs videobot
 
 ## ✅ Финальный чеклист
 
-- [ ] Файлы загружены на сервер
-- [ ] Flask установлен: `pip list | grep Flask`
-- [ ] .env настроен (SECRET_KEY, USERNAME, PASSWORD)
+- [ ] PostgreSQL установлен и запущен: `sudo systemctl status postgresql`
+- [ ] Файлы загружены на сервер (database_postgres.py, setup_postgres.py)
+- [ ] Зависимости установлены: `pip list | grep -E "flask|psycopg2|sqlalchemy"`
+- [ ] База данных создана: `python3 setup_postgres.py`
+- [ ] .env настроен (DB*\* переменные, ADMIN*\* переменные)
 - [ ] Админ-панель запущена: `pm2 list`
 - [ ] Порт 5000 открыт: `sudo ufw allow 5000`
 - [ ] Админ-панель открывается в браузере
@@ -676,5 +726,5 @@ pm2 logs videobot
 ---
 
 **Автор:** Nikita  
-**Версия:** 1.0  
-**Дата:** 2025-10-13
+**Версия:** 2.0 (PostgreSQL)  
+**Дата:** 2025-01-01

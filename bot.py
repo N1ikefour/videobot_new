@@ -10,7 +10,10 @@ from telegram.ext import (
 )
 from config import BOT_TOKEN
 from video_processor import VideoProcessor, process_video_copy_new
-from database import db_manager
+from database_postgres import DatabaseManager
+
+# Создаем экземпляр менеджера БД
+db_manager = DatabaseManager()
 
 # Настройка логирования
 logging.basicConfig(
@@ -680,7 +683,7 @@ class VideoBot:
                     os.remove(input_path)
                 
                 # Логируем успешную обработку видео
-                await db_manager.log_user_activity(
+                db_manager.log_user_activity(
                     user_id, 
                     'video_processed', 
                     {
@@ -1146,12 +1149,12 @@ class VideoBot:
         user_id = update.effective_user.id
         
         # Проверяем, является ли пользователь админом
-        if not await db_manager.is_admin(user_id):
+        if not db_manager.is_admin(user_id):
             await update.message.reply_text("❌ У вас нет прав администратора")
             return
         
         try:
-            stats = await db_manager.get_general_stats()
+            stats = db_manager.get_general_stats()
             
             stats_text = f"""📊 **Статистика бота**
 
@@ -1180,7 +1183,7 @@ class VideoBot:
         user_id = update.effective_user.id
         
         # Проверяем, является ли пользователь админом
-        if not await db_manager.is_admin(user_id):
+        if not db_manager.is_admin(user_id):
             await update.message.reply_text("❌ У вас нет прав администратора")
             return
         
@@ -1203,12 +1206,12 @@ class VideoBot:
                 return
             
             # Проверяем, не является ли цель тоже админом
-            if await db_manager.is_admin(target_user_id):
+            if db_manager.is_admin(target_user_id):
                 await update.message.reply_text("❌ Нельзя заблокировать другого администратора")
                 return
             
             # Блокируем пользователя
-            success = await db_manager.ban_user(target_user_id, user_id, reason)
+            success = db_manager.ban_user(target_user_id, user_id, reason)
             
             if success:
                 await update.message.reply_text(
@@ -1217,7 +1220,7 @@ class VideoBot:
                 )
                 
                 # Логируем действие админа
-                await db_manager.log_admin_action(user_id, 'ban_user', {
+                db_manager.log_admin_action(user_id, 'ban_user', {
                     'target_user_id': target_user_id,
                     'reason': reason
                 })
@@ -1235,7 +1238,7 @@ class VideoBot:
         user_id = update.effective_user.id
         
         # Проверяем, является ли пользователь админом
-        if not await db_manager.is_admin(user_id):
+        if not db_manager.is_admin(user_id):
             await update.message.reply_text("❌ У вас нет прав администратора")
             return
         
@@ -1252,13 +1255,13 @@ class VideoBot:
             target_user_id = int(context.args[0])
             
             # Разблокируем пользователя
-            success = await db_manager.unban_user(target_user_id)
+            success = db_manager.unban_user(target_user_id, user_id)
             
             if success:
                 await update.message.reply_text(f"✅ Пользователь {target_user_id} разблокирован")
                 
                 # Логируем действие админа
-                await db_manager.log_admin_action(user_id, 'unban_user', {
+                db_manager.log_admin_action(user_id, 'unban_user', {
                     'target_user_id': target_user_id
                 })
             else:
@@ -1275,7 +1278,7 @@ class VideoBot:
         user_id = update.effective_user.id
         
         # Проверяем, является ли пользователь админом
-        if not await db_manager.is_admin(user_id):
+        if not db_manager.is_admin(user_id):
             await update.message.reply_text("❌ У вас нет прав администратора")
             return
         
@@ -1288,7 +1291,7 @@ class VideoBot:
             limit = 10
             offset = (page - 1) * limit
             
-            users = await db_manager.get_all_users(limit, offset)
+            users = db_manager.get_all_users(limit, offset)
             
             if not users:
                 await update.message.reply_text("👥 Пользователи не найдены")
@@ -1319,7 +1322,7 @@ class VideoBot:
         user_id = update.effective_user.id
         
         # Проверяем, является ли пользователь админом
-        if not await db_manager.is_admin(user_id):
+        if not db_manager.is_admin(user_id):
             await update.message.reply_text("❌ У вас нет прав администратора")
             return
         
@@ -1331,7 +1334,7 @@ class VideoBot:
                 if hours > 720:  # Максимум 30 дней
                     hours = 720
             
-            active_users = await db_manager.get_active_users(hours)
+            active_users = db_manager.get_active_users(hours)
             
             if not active_users:
                 await update.message.reply_text(f"👥 Активных пользователей за последние {hours} часов не найдено")
@@ -1357,7 +1360,7 @@ class VideoBot:
             logger.error(f"Ошибка при получении активных пользователей: {e}")
             await update.message.reply_text("❌ Ошибка при получении активных пользователей")
 
-    async def admin_make_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def admin_add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Назначить пользователя администратором (только для супер-админов)"""
         user_id = update.effective_user.id
         
@@ -1373,7 +1376,7 @@ class VideoBot:
         if not context.args:
             await update.message.reply_text(
                 "❌ Укажите ID пользователя для назначения админом\n"
-                "Пример: `/admin_make_admin 123456789`",
+                "Пример: `/admin_add_admin 123456789`",
                 parse_mode='Markdown'
             )
             return
@@ -1382,13 +1385,13 @@ class VideoBot:
             target_user_id = int(context.args[0])
             
             # Назначаем админа
-            success = await db_manager.make_admin(target_user_id, user_id)
+            success = db_manager.add_admin(target_user_id, user_id)
             
             if success:
                 await update.message.reply_text(f"✅ Пользователь {target_user_id} назначен администратором")
                 
                 # Логируем действие
-                await db_manager.log_admin_action(user_id, 'make_admin', {
+                db_manager.log_admin_action(user_id, 'make_admin', {
                     'target_user_id': target_user_id
                 })
             else:
@@ -1405,7 +1408,7 @@ class VideoBot:
         user_id = update.effective_user.id
         
         # Проверяем, является ли пользователь админом
-        if not await db_manager.is_admin(user_id):
+        if not db_manager.is_admin(user_id):
             await update.message.reply_text("❌ У вас нет прав администратора")
             return
         
@@ -1520,7 +1523,7 @@ def main():
     application.add_handler(CommandHandler("admin_unban", video_bot.admin_unban))
     application.add_handler(CommandHandler("admin_users", video_bot.admin_users))
     application.add_handler(CommandHandler("admin_active_users", video_bot.admin_active_users))
-    application.add_handler(CommandHandler("admin_make_admin", video_bot.admin_make_admin))
+    application.add_handler(CommandHandler("admin_add_admin", video_bot.admin_add_admin))
     application.add_handler(CommandHandler("admin_help", video_bot.admin_help))
     
     # Запускаем бота

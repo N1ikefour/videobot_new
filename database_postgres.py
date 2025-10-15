@@ -1,45 +1,58 @@
 #!/usr/bin/env python3
 """
-Модуль для работы с базой данных пользователей и админ функций
+Модуль для работы с PostgreSQL базой данных пользователей и админ функций
 """
 
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import json
-from pathlib import Path
+from config import DATABASE_CONFIG, DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    """Менеджер базы данных для пользователей и админ функций"""
+    """Менеджер PostgreSQL базы данных для пользователей и админ функций"""
     
-    def __init__(self, db_path: str = "bot_database.db"):
-        self.db_path = db_path
+    def __init__(self):
+        self.db_config = DATABASE_CONFIG
+        self.connection_string = DATABASE_URL
         self.init_database()
+    
+    def get_connection(self):
+        """Получить подключение к базе данных"""
+        return psycopg2.connect(
+            host=self.db_config['host'],
+            port=self.db_config['port'],
+            database=self.db_config['database'],
+            user=self.db_config['user'],
+            password=self.db_config['password']
+        )
     
     def init_database(self):
         """Инициализация базы данных и создание таблиц"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
+                conn.autocommit = True
                 cursor = conn.cursor()
                 
                 # Таблица пользователей
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        username TEXT,
-                        first_name TEXT,
-                        last_name TEXT,
+                        user_id BIGINT PRIMARY KEY,
+                        username VARCHAR(255),
+                        first_name VARCHAR(255),
+                        last_name VARCHAR(255),
                         is_banned BOOLEAN DEFAULT FALSE,
                         ban_reason TEXT,
                         banned_at TIMESTAMP,
-                        banned_by INTEGER,
+                        banned_by BIGINT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         total_videos_processed INTEGER DEFAULT 0,
-                        subscription_type TEXT DEFAULT 'free',
+                        subscription_type VARCHAR(50) DEFAULT 'free',
                         subscription_expires_at TIMESTAMP,
                         subscription_created_at TIMESTAMP
                     )
@@ -48,10 +61,10 @@ class DatabaseManager:
                 # Таблица активности пользователей
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS user_activity (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        activity_type TEXT,
-                        activity_data TEXT,
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT,
+                        activity_type VARCHAR(100),
+                        activity_data JSONB,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (user_id) REFERENCES users (user_id)
                     )
@@ -60,11 +73,11 @@ class DatabaseManager:
                 # Таблица админских действий
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS admin_actions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        admin_id INTEGER,
-                        action_type TEXT,
-                        target_user_id INTEGER,
-                        action_data TEXT,
+                        id SERIAL PRIMARY KEY,
+                        admin_id BIGINT,
+                        action_type VARCHAR(100),
+                        target_user_id BIGINT,
+                        action_data JSONB,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (admin_id) REFERENCES users (user_id),
                         FOREIGN KEY (target_user_id) REFERENCES users (user_id)
@@ -74,10 +87,10 @@ class DatabaseManager:
                 # Таблица админов
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS admins (
-                        user_id INTEGER PRIMARY KEY,
-                        permissions TEXT DEFAULT 'basic',
+                        user_id BIGINT PRIMARY KEY,
+                        permissions VARCHAR(50) DEFAULT 'basic',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        created_by INTEGER,
+                        created_by BIGINT,
                         FOREIGN KEY (user_id) REFERENCES users (user_id)
                     )
                 ''')
@@ -85,7 +98,7 @@ class DatabaseManager:
                 # Таблица статистики
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS daily_stats (
-                        date TEXT PRIMARY KEY,
+                        date DATE PRIMARY KEY,
                         total_users INTEGER DEFAULT 0,
                         active_users INTEGER DEFAULT 0,
                         new_users INTEGER DEFAULT 0,
@@ -94,37 +107,65 @@ class DatabaseManager:
                     )
                 ''')
                 
-                conn.commit()
-                logger.info("База данных успешно инициализирована")
+                # Создаем индексы для производительности
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_last_activity ON users(last_activity)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_is_banned ON users(is_banned)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_activity_created_at ON user_activity(created_at)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_activity_user_id ON user_activity(user_id)')
+                
+                # Создаем первого админа если его нет
+                self.create_first_admin()
+                
+                logger.info("PostgreSQL база данных успешно инициализирована")
                 
         except Exception as e:
-            logger.error(f"Ошибка инициализации базы данных: {e}")
+            logger.error(f"Ошибка инициализации PostgreSQL базы данных: {e}")
             raise
+    
+    def create_first_admin(self):
+        """Создает первого админа если его нет"""
+        try:
+            # ID первого админа (замените на ваш Telegram ID)
+            FIRST_ADMIN_ID = 454002721  # Замените на ваш ID!
+            
+            with self.get_connection() as conn:
+                conn.autocommit = True
+                cursor = conn.cursor()
+                
+                # Проверяем, есть ли уже админы
+                cursor.execute('SELECT COUNT(*) FROM admins')
+                admin_count = cursor.fetchone()[0]
+                
+                if admin_count == 0:
+                    # Создаем первого админа
+                    cursor.execute('''
+                        INSERT INTO admins (user_id, permissions, created_by)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (user_id) DO NOTHING
+                    ''', (FIRST_ADMIN_ID, 'super_admin', FIRST_ADMIN_ID))
+                    
+                    logger.info(f"Создан первый админ с ID: {FIRST_ADMIN_ID}")
+                    
+        except Exception as e:
+            logger.error(f"Ошибка создания первого админа: {e}")
     
     def add_or_update_user(self, user_id: int, username: str = None, 
                           first_name: str = None, last_name: str = None) -> bool:
         """Добавить или обновить пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Проверяем, существует ли пользователь
-                cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
-                exists = cursor.fetchone()
-                
-                if exists:
-                    # Обновляем существующего пользователя
-                    cursor.execute('''
-                        UPDATE users 
-                        SET username = ?, first_name = ?, last_name = ?, last_activity = CURRENT_TIMESTAMP
-                        WHERE user_id = ?
-                    ''', (username, first_name, last_name, user_id))
-                else:
-                    # Добавляем нового пользователя
-                    cursor.execute('''
-                        INSERT INTO users (user_id, username, first_name, last_name)
-                        VALUES (?, ?, ?, ?)
-                    ''', (user_id, username, first_name, last_name))
+                # Используем UPSERT для PostgreSQL
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, last_name, last_activity)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        username = EXCLUDED.username,
+                        first_name = EXCLUDED.first_name,
+                        last_name = EXCLUDED.last_name,
+                        last_activity = CURRENT_TIMESTAMP
+                ''', (user_id, username, first_name, last_name))
                 
                 conn.commit()
                 return True
@@ -136,18 +177,18 @@ class DatabaseManager:
     def log_user_activity(self, user_id: int, activity_type: str, activity_data: Dict = None):
         """Логирование активности пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Обновляем последнюю активность пользователя
                 cursor.execute('''
-                    UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE user_id = ?
+                    UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE user_id = %s
                 ''', (user_id,))
                 
                 # Добавляем запись об активности
                 cursor.execute('''
                     INSERT INTO user_activity (user_id, activity_type, activity_data)
-                    VALUES (?, ?, ?)
+                    VALUES (%s, %s, %s)
                 ''', (user_id, activity_type, json.dumps(activity_data) if activity_data else None))
                 
                 conn.commit()
@@ -158,13 +199,13 @@ class DatabaseManager:
     def increment_user_videos(self, user_id: int):
         """Увеличить счетчик обработанных видео пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE users 
                     SET total_videos_processed = total_videos_processed + 1,
                         last_activity = CURRENT_TIMESTAMP
-                    WHERE user_id = ?
+                    WHERE user_id = %s
                 ''', (user_id,))
                 conn.commit()
                 
@@ -174,21 +215,21 @@ class DatabaseManager:
     def ban_user(self, user_id: int, admin_id: int, reason: str = None) -> bool:
         """Забанить пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Баним пользователя
                 cursor.execute('''
                     UPDATE users 
-                    SET is_banned = TRUE, ban_reason = ?, banned_at = CURRENT_TIMESTAMP, banned_by = ?
-                    WHERE user_id = ?
+                    SET is_banned = TRUE, ban_reason = %s, banned_at = CURRENT_TIMESTAMP, banned_by = %s
+                    WHERE user_id = %s
                 ''', (reason, admin_id, user_id))
                 
                 # Логируем админское действие
                 cursor.execute('''
                     INSERT INTO admin_actions (admin_id, action_type, target_user_id, action_data)
-                    VALUES (?, 'ban', ?, ?)
-                ''', (admin_id, user_id, json.dumps({'reason': reason})))
+                    VALUES (%s, %s, %s, %s)
+                ''', (admin_id, 'ban', user_id, json.dumps({'reason': reason})))
                 
                 conn.commit()
                 return True
@@ -197,24 +238,39 @@ class DatabaseManager:
             logger.error(f"Ошибка бана пользователя {user_id}: {e}")
             return False
     
+    def log_admin_action(self, admin_id: int, action_type: str, action_data: Dict = None) -> bool:
+        """Логирование админских действий"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO admin_actions (admin_id, action_type, action_data)
+                    VALUES (%s, %s, %s)
+                ''', (admin_id, action_type, json.dumps(action_data) if action_data else None))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Ошибка логирования админского действия: {e}")
+            return False
+
     def unban_user(self, user_id: int, admin_id: int) -> bool:
         """Разбанить пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Разбаниваем пользователя
                 cursor.execute('''
                     UPDATE users 
                     SET is_banned = FALSE, ban_reason = NULL, banned_at = NULL, banned_by = NULL
-                    WHERE user_id = ?
+                    WHERE user_id = %s
                 ''', (user_id,))
                 
                 # Логируем админское действие
                 cursor.execute('''
                     INSERT INTO admin_actions (admin_id, action_type, target_user_id, action_data)
-                    VALUES (?, 'unban', ?, NULL)
-                ''', (admin_id, user_id))
+                    VALUES (%s, %s, %s, NULL)
+                ''', (admin_id, 'unban', user_id))
                 
                 conn.commit()
                 return True
@@ -226,9 +282,9 @@ class DatabaseManager:
     def is_user_banned(self, user_id: int) -> bool:
         """Проверить, забанен ли пользователь"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
+                cursor.execute('SELECT is_banned FROM users WHERE user_id = %s', (user_id,))
                 result = cursor.fetchone()
                 return result[0] if result else False
                 
@@ -239,11 +295,14 @@ class DatabaseManager:
     def add_admin(self, user_id: int, admin_id: int, permissions: str = 'basic') -> bool:
         """Добавить администратора"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT OR REPLACE INTO admins (user_id, permissions, created_by)
-                    VALUES (?, ?, ?)
+                    INSERT INTO admins (user_id, permissions, created_by)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        permissions = EXCLUDED.permissions,
+                        created_by = EXCLUDED.created_by
                 ''', (user_id, permissions, admin_id))
                 conn.commit()
                 return True
@@ -255,9 +314,9 @@ class DatabaseManager:
     def is_admin(self, user_id: int) -> bool:
         """Проверить, является ли пользователь администратором"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT user_id FROM admins WHERE user_id = ?', (user_id,))
+                cursor.execute('SELECT user_id FROM admins WHERE user_id = %s', (user_id,))
                 return cursor.fetchone() is not None
                 
         except Exception as e:
@@ -267,29 +326,16 @@ class DatabaseManager:
     def get_user_stats(self, user_id: int) -> Optional[Dict]:
         """Получить статистику пользователя"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 cursor.execute('''
                     SELECT user_id, username, first_name, last_name, is_banned, ban_reason,
                            created_at, last_activity, total_videos_processed, subscription_type
-                    FROM users WHERE user_id = ?
+                    FROM users WHERE user_id = %s
                 ''', (user_id,))
                 
                 result = cursor.fetchone()
-                if result:
-                    return {
-                        'user_id': result[0],
-                        'username': result[1],
-                        'first_name': result[2],
-                        'last_name': result[3],
-                        'is_banned': result[4],
-                        'ban_reason': result[5],
-                        'created_at': result[6],
-                        'last_activity': result[7],
-                        'total_videos_processed': result[8],
-                        'subscription_type': result[9]
-                    }
-                return None
+                return dict(result) if result else None
                 
         except Exception as e:
             logger.error(f"Ошибка получения статистики пользователя {user_id}: {e}")
@@ -298,34 +344,19 @@ class DatabaseManager:
     def get_active_users(self, hours: int = 24) -> List[Dict]:
         """Получить список активных пользователей за последние N часов"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Вычисляем время N часов назад
-                time_threshold = datetime.now() - timedelta(hours=hours)
+            with self.get_connection() as conn:
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 
                 cursor.execute('''
                     SELECT user_id, username, first_name, last_name, last_activity, 
                            total_videos_processed, is_banned, subscription_type
                     FROM users 
-                    WHERE last_activity >= ?
+                    WHERE last_activity >= NOW() - INTERVAL '%s hours'
                     ORDER BY last_activity DESC
-                ''', (time_threshold.isoformat(),))
+                ''', (hours,))
                 
                 results = cursor.fetchall()
-                return [
-                    {
-                        'user_id': row[0],
-                        'username': row[1],
-                        'first_name': row[2],
-                        'last_name': row[3],
-                        'last_activity': row[4],
-                        'total_videos_processed': row[5],
-                        'is_banned': row[6],
-                        'subscription_type': row[7]
-                    }
-                    for row in results
-                ]
+                return [dict(row) for row in results]
                 
         except Exception as e:
             logger.error(f"Ошибка получения активных пользователей: {e}")
@@ -334,31 +365,18 @@ class DatabaseManager:
     def get_all_users(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """Получить список всех пользователей с пагинацией"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 cursor.execute('''
                     SELECT user_id, username, first_name, last_name, created_at,
                            last_activity, total_videos_processed, is_banned, subscription_type
                     FROM users 
                     ORDER BY created_at DESC
-                    LIMIT ? OFFSET ?
+                    LIMIT %s OFFSET %s
                 ''', (limit, offset))
                 
                 results = cursor.fetchall()
-                return [
-                    {
-                        'user_id': row[0],
-                        'username': row[1],
-                        'first_name': row[2],
-                        'last_name': row[3],
-                        'created_at': row[4],
-                        'last_activity': row[5],
-                        'total_videos_processed': row[6],
-                        'is_banned': row[7],
-                        'subscription_type': row[8]
-                    }
-                    for row in results
-                ]
+                return [dict(row) for row in results]
                 
         except Exception as e:
             logger.error(f"Ошибка получения списка пользователей: {e}")
@@ -367,9 +385,8 @@ class DatabaseManager:
     def get_user_details(self, user_id):
         """Get detailed user information"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 cursor.execute("""
                     SELECT u.*, 
                            COUNT(ua.id) as activity_count,
@@ -377,14 +394,12 @@ class DatabaseManager:
                     FROM users u
                     LEFT JOIN user_activity ua ON u.user_id = ua.user_id
                     LEFT JOIN admins a ON u.user_id = a.user_id
-                    WHERE u.user_id = ?
-                    GROUP BY u.user_id
+                    WHERE u.user_id = %s
+                    GROUP BY u.user_id, a.user_id
                 """, (user_id,))
                 
                 row = cursor.fetchone()
-                if row:
-                    return dict(row)
-                return None
+                return dict(row) if row else None
         except Exception as e:
             logger.error(f"Error getting user details: {e}")
             return None
@@ -392,33 +407,32 @@ class DatabaseManager:
     def get_users_filtered(self, search='', status='', activity='', page=1, per_page=20):
         """Get filtered users with pagination"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 
                 # Build WHERE clause
                 where_conditions = []
                 params = []
                 
                 if search:
-                    where_conditions.append("(u.user_id LIKE ? OR u.first_name LIKE ? OR u.username LIKE ?)")
+                    where_conditions.append("(u.user_id::text LIKE %s OR u.first_name LIKE %s OR u.username LIKE %s)")
                     search_param = f"%{search}%"
                     params.extend([search_param, search_param, search_param])
                 
                 if status == 'active':
-                    where_conditions.append("u.is_banned = 0")
+                    where_conditions.append("u.is_banned = FALSE")
                 elif status == 'banned':
-                    where_conditions.append("u.is_banned = 1")
+                    where_conditions.append("u.is_banned = TRUE")
                 elif status == 'admin':
                     where_conditions.append("a.user_id IS NOT NULL")
                 
                 if activity:
                     if activity == '24h':
-                        where_conditions.append("u.last_activity >= datetime('now', '-1 day')")
+                        where_conditions.append("u.last_activity >= NOW() - INTERVAL '1 day'")
                     elif activity == '7d':
-                        where_conditions.append("u.last_activity >= datetime('now', '-7 days')")
+                        where_conditions.append("u.last_activity >= NOW() - INTERVAL '7 days'")
                     elif activity == '30d':
-                        where_conditions.append("u.last_activity >= datetime('now', '-30 days')")
+                        where_conditions.append("u.last_activity >= NOW() - INTERVAL '30 days'")
                 
                 where_clause = ""
                 if where_conditions:
@@ -432,7 +446,7 @@ class DatabaseManager:
                     {where_clause}
                 """
                 cursor.execute(count_query, params)
-                total_users = cursor.fetchone()[0]
+                total_users = cursor.fetchone()['count']
                 
                 # Get users with pagination
                 offset = (page - 1) * per_page
@@ -443,7 +457,7 @@ class DatabaseManager:
                     LEFT JOIN admins a ON u.user_id = a.user_id
                     {where_clause}
                     ORDER BY u.last_activity DESC, u.created_at DESC
-                    LIMIT ? OFFSET ?
+                    LIMIT %s OFFSET %s
                 """
                 params.extend([per_page, offset])
                 cursor.execute(query, params)
@@ -466,7 +480,7 @@ class DatabaseManager:
     def get_general_stats(self) -> Dict:
         """Получить общую статистику бота"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Общее количество пользователей
@@ -474,21 +488,13 @@ class DatabaseManager:
                 total_users = cursor.fetchone()[0]
                 
                 # Активные пользователи за разные периоды
-                now = datetime.now()
-                
-                # За 24 часа
-                time_24h = now - timedelta(hours=24)
-                cursor.execute('SELECT COUNT(*) FROM users WHERE last_activity >= ?', (time_24h.isoformat(),))
+                cursor.execute('SELECT COUNT(*) FROM users WHERE last_activity >= NOW() - INTERVAL \'24 hours\'')
                 active_24h = cursor.fetchone()[0]
                 
-                # За 7 дней
-                time_7d = now - timedelta(days=7)
-                cursor.execute('SELECT COUNT(*) FROM users WHERE last_activity >= ?', (time_7d.isoformat(),))
+                cursor.execute('SELECT COUNT(*) FROM users WHERE last_activity >= NOW() - INTERVAL \'7 days\'')
                 active_7d = cursor.fetchone()[0]
                 
-                # За 30 дней
-                time_30d = now - timedelta(days=30)
-                cursor.execute('SELECT COUNT(*) FROM users WHERE last_activity >= ?', (time_30d.isoformat(),))
+                cursor.execute('SELECT COUNT(*) FROM users WHERE last_activity >= NOW() - INTERVAL \'30 days\'')
                 active_30d = cursor.fetchone()[0]
                 
                 # Общее количество обработанных видео
@@ -497,23 +503,21 @@ class DatabaseManager:
                 total_videos = result if result else 0
                 
                 # Видео за сегодня
-                today = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 cursor.execute('''
                     SELECT COUNT(*) FROM user_activity 
-                    WHERE activity_type = 'video_upload' AND created_at >= ?
-                ''', (today.isoformat(),))
+                    WHERE activity_type = 'video_upload' AND created_at >= CURRENT_DATE
+                ''')
                 videos_today = cursor.fetchone()[0]
                 
                 # Видео за неделю
-                week_ago = now - timedelta(days=7)
                 cursor.execute('''
                     SELECT COUNT(*) FROM user_activity 
-                    WHERE activity_type = 'video_upload' AND created_at >= ?
-                ''', (week_ago.isoformat(),))
+                    WHERE activity_type = 'video_upload' AND created_at >= NOW() - INTERVAL '7 days'
+                ''')
                 videos_week = cursor.fetchone()[0]
                 
                 # Заблокированные пользователи
-                cursor.execute('SELECT COUNT(*) FROM users WHERE is_banned = 1')
+                cursor.execute('SELECT COUNT(*) FROM users WHERE is_banned = TRUE')
                 banned_users = cursor.fetchone()[0]
                 
                 return {

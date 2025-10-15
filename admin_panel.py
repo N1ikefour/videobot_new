@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import hashlib
 import os
 import sqlite3
-from database import db_manager
+from database_postgres import db_manager
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('ADMIN_SECRET_KEY', 'your-secret-key-change-this')
@@ -28,6 +28,9 @@ def hash_password(password):
     """Хеширование пароля"""
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Предвычисляем хеш пароля
+ADMIN_PASSWORD_HASH = hash_password(ADMIN_PASSWORD)
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     """Страница входа"""
@@ -35,7 +38,7 @@ def login():
         username = request.form['username']
         password = request.form['password']
         
-        if username == ADMIN_USERNAME and hash_password(password) == hash_password(ADMIN_PASSWORD):
+        if username == ADMIN_USERNAME and hash_password(password) == ADMIN_PASSWORD_HASH:
             session['logged_in'] = True
             session['username'] = username
             flash('Успешный вход в систему', 'success')
