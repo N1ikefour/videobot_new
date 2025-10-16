@@ -28,6 +28,97 @@ def cleanup_old_temp_files(temp_dir: str):
     except Exception as e:
         logger.warning(f"Ошибка при очистке временных файлов: {e}")
 
+def generate_random_compression_settings(copy_index: int):
+    """Генерирует случайные параметры сжатия для каждой копии с возможностью lossless режима"""
+    # Используем copy_index как seed для воспроизводимости
+    random.seed(copy_index)
+    
+    # Определяем вероятность lossless копии (30% шанс)
+    use_lossless = random.random() < 0.3
+    
+    if use_lossless:
+        # Режим без потери качества
+        quality_levels = [
+            {
+                'bitrate': None,  # Не используется в lossless
+                'crf': 0,  # CRF 0 = lossless
+                'preset': 'medium',
+                'description': 'Без потери качества (lossless)'
+            }
+        ]
+    else:
+        # Обычные режимы сжатия
+        quality_levels = [
+            {
+                'bitrate': '2000k',
+                'crf': 18,
+                'preset': 'slow',
+                'description': 'Очень высокое качество'
+            },
+            {
+                'bitrate': '1500k',
+                'crf': 20,
+                'preset': 'medium',
+                'description': 'Высокое качество'
+            },
+            {
+                'bitrate': '1000k',
+                'crf': 23,
+                'preset': 'fast',
+                'description': 'Хорошее качество'
+            },
+            {
+                'bitrate': '500k',
+                'crf': 26,
+                'preset': 'fast',
+                'description': 'Среднее качество'
+            },
+            {
+                'bitrate': '300k',
+                'crf': 28,
+                'preset': 'fast',
+                'description': 'Низкое качество'
+            }
+        ]
+    
+    # Разрешения
+    resolutions = [
+        {'width': 854, 'height': 480, 'description': '480p вертикальное'},
+        {'width': 480, 'height': 854, 'description': '480p горизонтальное'},
+        {'width': 1280, 'height': 720, 'description': '720p горизонтальное'},
+        {'width': 720, 'height': 1280, 'description': '720p вертикальное'},
+        {'width': 1080, 'height': 1920, 'description': '1080p вертикальное'},
+        {'width': 1920, 'height': 1080, 'description': '1080p горизонтальное'},
+    ]
+    
+    # Выбираем случайные параметры
+    quality = random.choice(quality_levels)
+    resolution = random.choice(resolutions)
+    
+    # Случайная частота кадров
+    fps_options = [24, 25, 30, 50, 60]
+    fps = random.choice(fps_options)
+    
+    # Случайные аудио настройки
+    audio_bitrates = ['96k', '128k', '192k', '256k']
+    audio_bitrate = random.choice(audio_bitrates)
+    
+    settings = {
+        'video_bitrate': quality['bitrate'],
+        'crf': quality['crf'],
+        'preset': quality['preset'],
+        'width': resolution['width'],
+        'height': resolution['height'],
+        'fps': fps,
+        'audio_bitrate': audio_bitrate,
+        'quality_description': quality['description'],
+        'resolution_description': resolution['description'],
+        'is_lossless': use_lossless,
+        'ffmpeg_params': ['-crf', str(quality['crf']), '-preset', quality['preset'], '-movflags', '+faststart']
+    }
+    
+    return settings
+
 # Импортируем cv2 только если он нужен, иначе используем альтернативы
 try:
     import cv2
@@ -173,15 +264,28 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
         logger.info(f"Процесс {os.getpid()}: Применяю модификации")
         modified_video = apply_unique_modifications(video, copy_index, add_frames)
         
+        # Получаем случайные параметры сжатия
+        compression_settings = generate_random_compression_settings(copy_index)
+        
+        # Изменяем разрешение видео если нужно
+        if compression_settings['width'] != video.w or compression_settings['height'] != video.h:
+            modified_video = modified_video.resize((compression_settings['width'], compression_settings['height']))
+        
+        # Изменяем FPS если нужно
+        if compression_settings['fps'] != video.fps:
+            modified_video = modified_video.set_fps(compression_settings['fps'])
+        
         # Настройки сжатия
         if compress:
             codec = 'libx264'
-            bitrate = '500k'
+            bitrate = compression_settings['audio_bitrate']
             audio_codec = 'aac'
+            ffmpeg_params = compression_settings['ffmpeg_params']
         else:
             codec = 'libx264'
             bitrate = None
             audio_codec = 'aac'
+            ffmpeg_params = None
         
         # Создаем папку temp если не существует
         os.makedirs(TEMP_DIR, exist_ok=True)
@@ -209,7 +313,8 @@ def process_video_copy(input_path: str, output_path: str, copy_index: int, add_f
             temp_audiofile=temp_audio_file,
             remove_temp=True,
             verbose=False,
-            logger=None
+            logger=None,
+            ffmpeg_params=ffmpeg_params if ffmpeg_params else []
         )
         
         logger.info(f"Процесс {os.getpid()}: Обработка завершена успешно")
@@ -397,6 +502,9 @@ def process_video_copy_new(input_path: str, output_path: str, copy_index: int, a
         # Применяем уникальные модификации
         modified_video = apply_unique_modifications(video, copy_index, add_frames)
         
+        # Получаем случайные параметры сжатия
+        compression_settings = generate_random_compression_settings(copy_index)
+        
         # Изменяем разрешение если нужно
         if change_resolution:
             # Получаем текущие размеры
@@ -411,19 +519,29 @@ def process_video_copy_new(input_path: str, output_path: str, copy_index: int, a
                 logger.info(f"Разрешение изменено с {original_width}x{original_height} на {target_width}x{target_height}")
             else:
                 logger.info(f"Разрешение уже {target_width}x{target_height}, изменение не требуется")
+        else:
+            # Используем случайное разрешение из настроек сжатия
+            if compression_settings['width'] != modified_video.w or compression_settings['height'] != modified_video.h:
+                modified_video = modified_video.resize((compression_settings['width'], compression_settings['height']))
+        
+        # Изменяем FPS если нужно
+        if compression_settings['fps'] != modified_video.fps:
+            modified_video = modified_video.set_fps(compression_settings['fps'])
         
         # Настройки сжатия
         if compress:
             codec_settings = {
                 'codec': 'libx264',
-                'bitrate': '1000k',
-                'audio_codec': 'aac'
+                'bitrate': compression_settings['audio_bitrate'],
+                'audio_codec': 'aac',
+                'ffmpeg_params': compression_settings['ffmpeg_params']
             }
         else:
             codec_settings = {
                 'codec': 'libx264',
-                'bitrate': '2000k',
-                'audio_codec': 'aac'
+                'bitrate': compression_settings['audio_bitrate'],
+                'audio_codec': 'aac',
+                'ffmpeg_params': compression_settings['ffmpeg_params']
             }
         
         # Создаем папку temp если не существует
