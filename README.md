@@ -97,7 +97,6 @@ finnaly_videoBot/
 
 - MP4
 - AVI
-- MOV
 - MKV
 
 ### Ограничения:
