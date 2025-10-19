@@ -21,3 +21,12 @@ Thumbs.db
 /media/
 output/
 temp/
+
+# базы данных (локальные файлы)
+*.db
+*.sqlite
+*.sqlite3
+bot_database.db
+
+# обработанные видео
+processed_videos/
