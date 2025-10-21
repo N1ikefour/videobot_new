@@ -299,13 +299,17 @@ def apply_unique_modifications(video, copy_index: int, add_frames: bool):
         # Случайный выбор цвета из расширенной палитры
         color = random.choice(frame_colors)
         
-        # Случайная толщина рамки от 3 до 15 пикселей
-        frame_thickness = random.randint(3, 15)
+        # Случайная толщина рамки от 3 до 100 пикселей
+        frame_thickness = random.randint(3, 100)
         
-        logger.info(f"Копия {copy_index + 1}: цвет рамки {color}, толщина {frame_thickness}px")
+        # Случайные пропорции для разных сторон рамки
+        # Варианты: 1) Верх/низ толще, 2) Бока толще, 3) Все одинаково
+        frame_style = random.choice(['top_bottom_thick', 'sides_thick', 'uniform'])
         
-        # Создаем цветную рамку
-        frame_clip = add_frame_to_video(video, color, frame_thickness)
+        logger.info(f"Копия {copy_index + 1}: цвет {color}, толщина {frame_thickness}px, стиль {frame_style}")
+        
+        # Создаем цветную рамку с выбранным стилем
+        frame_clip = add_frame_to_video(video, color, frame_thickness, frame_style)
         return frame_clip
     else:
         # Просто изменяем яркость или контрастность
@@ -314,28 +318,44 @@ def apply_unique_modifications(video, copy_index: int, add_frames: bool):
         return modified_video
 
 
-def add_frame_to_video(video, color, thickness):
-    """Добавляет цветную рамку к видео"""
+def add_frame_to_video(video, color, thickness, frame_style='top_bottom_thick'):
+    """Добавляет цветную рамку к видео с настраиваемыми пропорциями"""
     from moviepy.editor import ColorClip
     
     # Получаем размеры видео
     w, h = video.size
     
+    # Вычисляем толщину для разных сторон в зависимости от стиля
+    if frame_style == 'top_bottom_thick':
+        # Верх и низ толще боков (как в кино)
+        top_bottom_thickness = thickness
+        left_right_thickness = max(3, thickness // 3)
+    elif frame_style == 'sides_thick':
+        # Бока толще верха/низа (вертикальная ориентация)
+        left_right_thickness = thickness
+        top_bottom_thickness = max(3, thickness // 3)
+    else:  # uniform
+        # Все стороны одинаковые
+        top_bottom_thickness = thickness
+        left_right_thickness = thickness
+    
+    logger.info(f"Стиль {frame_style}: верх/низ={top_bottom_thickness}px, бока={left_right_thickness}px")
+    
     # Создаем цветные полосы для рамки
     # Верхняя полоса
-    top_frame = ColorClip(size=(w, thickness), color=color, duration=video.duration)
+    top_frame = ColorClip(size=(w, top_bottom_thickness), color=color, duration=video.duration)
     # Нижняя полоса
-    bottom_frame = ColorClip(size=(w, thickness), color=color, duration=video.duration)
+    bottom_frame = ColorClip(size=(w, top_bottom_thickness), color=color, duration=video.duration)
     # Левая полоса
-    left_frame = ColorClip(size=(thickness, h), color=color, duration=video.duration)
+    left_frame = ColorClip(size=(left_right_thickness, h), color=color, duration=video.duration)
     # Правая полоса
-    right_frame = ColorClip(size=(thickness, h), color=color, duration=video.duration)
+    right_frame = ColorClip(size=(left_right_thickness, h), color=color, duration=video.duration)
     
     # Позиционируем рамки
     top_frame = top_frame.set_position(('center', 0))
-    bottom_frame = bottom_frame.set_position(('center', h - thickness))
+    bottom_frame = bottom_frame.set_position(('center', h - top_bottom_thickness))
     left_frame = left_frame.set_position((0, 'center'))
-    right_frame = right_frame.set_position((w - thickness, 'center'))
+    right_frame = right_frame.set_position((w - left_right_thickness, 'center'))
     
     # Создаем композитное видео с рамкой
     final_video = CompositeVideoClip([video, top_frame, bottom_frame, left_frame, right_frame])
