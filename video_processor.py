@@ -95,8 +95,8 @@ class VideoProcessor:
                     await asyncio.wait_for(
                         loop.run_in_executor(
                             None,  # Используем стандартный ThreadPoolExecutor
-                            process_video_copy,
-                            abs_input_path, abs_output_path, i, add_frames, compress
+                            process_video_copy_new,
+                            abs_input_path, abs_output_path, i, add_frames, compress, False, user_id
                         ),
                         timeout=timeout_seconds
                     )
@@ -137,117 +137,7 @@ class VideoProcessor:
 
 
 # Глобальная функция для обработки видео в отдельном процессе
-def process_video_copy(input_path: str, output_path: str, copy_index: int, add_frames: bool, compress: bool):
-    """Функция для обработки видео в отдельном процессе (обходит GIL)"""
-    import os
-    import logging
-    import gc
-    import time
-    from moviepy.editor import VideoFileClip
-    
-    # Настраиваем логирование для процесса
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    
-    video = None
-    modified_video = None
-    temp_audio_file = None
-    
-    try:
-        logger.info(f"Процесс {os.getpid()}: Начинаю обработку {input_path}")
-        
-        # Проверяем что входной файл существует
-        if not os.path.exists(input_path):
-            raise FileNotFoundError(f"Входной файл {input_path} не найден в процессе")
-        
-        # Создаем директорию для выходного файла если не существует
-        output_dir = os.path.dirname(output_path)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-        
-        # Загружаем видео
-        logger.info(f"Процесс {os.getpid()}: Загружаю видео")
-        video = VideoFileClip(input_path)
-        
-        # Применяем уникальные модификации
-        logger.info(f"Процесс {os.getpid()}: Применяю модификации")
-        modified_video = apply_unique_modifications(video, copy_index, add_frames)
-        
-        # Настройки сжатия
-        if compress:
-            codec = 'libx264'
-            bitrate = '500k'
-            audio_codec = 'aac'
-        else:
-            codec = 'libx264'
-            bitrate = None
-            audio_codec = 'aac'
-        
-        # Создаем папку temp если не существует
-        os.makedirs(TEMP_DIR, exist_ok=True)
-        
-        # Очищаем старые временные файлы
-        cleanup_old_temp_files(TEMP_DIR)
-        
-        # Создаем уникальное имя для временного аудио файла в папке temp
-        temp_audio_file = os.path.join(TEMP_DIR, f"temp-audio-{copy_index}-{int(time.time())}-{os.getpid()}.m4a")
-        
-        logger.info(f"Процесс {os.getpid()}: Сохраняю видео в {output_path}")
-        
-        # Отключаем verbose вывод MoviePy
-        import moviepy.config as config
-        try:
-            config.FFMPEG_BINARY = config.try_download_binaries()
-        except:
-            pass  # Игнорируем ошибки конфигурации
-        
-        modified_video.write_videofile(
-            output_path,
-            codec=codec,
-            bitrate=bitrate,
-            audio_codec=audio_codec,
-            temp_audiofile=temp_audio_file,
-            remove_temp=True,
-            verbose=False,
-            logger=None
-        )
-        
-        logger.info(f"Процесс {os.getpid()}: Обработка завершена успешно")
-                
-    except Exception as e:
-        logger.error(f"Процесс {os.getpid()}: Ошибка при обработке видео: {e}")
-        raise
-        
-    finally:
-        # Принудительно закрываем все видео объекты
-        try:
-            if modified_video is not None:
-                modified_video.close()
-                del modified_video
-        except:
-            pass
-            
-        try:
-            if video is not None:
-                video.close()
-                del video
-        except:
-            pass
-        
-        # Удаляем временный аудио файл если он остался
-        if temp_audio_file and os.path.exists(temp_audio_file):
-            try:
-                time.sleep(0.5)  # Небольшая задержка
-                os.remove(temp_audio_file)
-                logger.info(f"Процесс {os.getpid()}: Удален временный аудио файл: {temp_audio_file}")
-            except Exception as e:
-                logger.warning(f"Процесс {os.getpid()}: Не удалось удалить временный аудио файл {temp_audio_file}: {e}")
-        
-        # Принудительная очистка памяти
-        gc.collect()
-
-
-def apply_unique_modifications(video, copy_index: int, add_frames: bool):
+def apply_unique_modifications(video, copy_index: int, add_frames: bool, enable_brightness_change: bool = True):
     """Применяет уникальные модификации к видео"""
     # Расширенная палитра цветов для рамок
     frame_colors = [
@@ -299,8 +189,8 @@ def apply_unique_modifications(video, copy_index: int, add_frames: bool):
         # Случайный выбор цвета из расширенной палитры
         color = random.choice(frame_colors)
         
-        # Случайная толщина рамки от 3 до 100 пикселей
-        frame_thickness = random.randint(3, 100)
+        # Случайная толщина рамки от 3 до 80 пикселей
+        frame_thickness = random.randint(3, 80)
         
         # Случайные пропорции для разных сторон рамки
         # Варианты: 1) Верх/низ толще, 2) Бока толще, 3) Все одинаково
@@ -308,13 +198,65 @@ def apply_unique_modifications(video, copy_index: int, add_frames: bool):
         
         logger.info(f"Копия {copy_index + 1}: цвет {color}, толщина {frame_thickness}px, стиль {frame_style}")
         
+        # Сначала применяем незаметное изменение яркости (если включено)
+        if enable_brightness_change:
+            brightness_factor = 0.98 + (copy_index * 0.01)  # Очень небольшое изменение яркости (0.98-1.03)
+            
+            def adjust_brightness(image):
+                """Изменяет яркость изображения"""
+                adjusted = image * brightness_factor
+                return np.clip(adjusted, 0, 255).astype('uint8')
+            
+            # Применяем изменение яркости к видео
+            try:
+                brightened_video = video.fl_image(adjust_brightness)
+                logger.info(f"Копия {copy_index + 1}: применено незаметное изменение яркости ({brightness_factor:.2f})")
+            except Exception as e:
+                logger.warning(f"Ошибка при изменении яркости: {e}, используем оригинальное видео")
+                brightened_video = video
+        else:
+            brightened_video = video
+        
         # Создаем цветную рамку с выбранным стилем
-        frame_clip = add_frame_to_video(video, color, frame_thickness, frame_style)
-        return frame_clip
+        frame_clip = add_frame_to_video(brightened_video, color, frame_thickness, frame_style)
+        
+        # Добавляем случайный сдвиг видео на 1-3 пикселя для дополнительной уникальности
+        shift_x = random.randint(-3, 3)  # Случайный сдвиг по X от -3 до +3 пикселей
+        shift_y = random.randint(-3, 3)  # Случайный сдвиг по Y от -3 до +3 пикселей
+        
+        if shift_x != 0 or shift_y != 0:
+            # Применяем сдвиг к видео с рамкой
+            shifted_clip = frame_clip.set_position(lambda t: (shift_x, shift_y))
+            logger.info(f"Копия {copy_index + 1}: применен сдвиг видео ({shift_x}, {shift_y}) пикселей")
+            return shifted_clip
+        else:
+            logger.info(f"Копия {copy_index + 1}: сдвиг не применен (0, 0)")
+            return frame_clip
     else:
-        # Просто изменяем яркость или контрастность
-        brightness_factor = 1.0 + (copy_index * 0.05)  # Небольшое изменение яркости
-        modified_video = video.fx(lambda clip: clip.multiply_volume(brightness_factor))
+        # Добавляем незаметное изменение яркости для уникальности (если включено)
+        if enable_brightness_change:
+            # Используем очень небольшое изменение, чтобы было незаметно глазу
+            brightness_factor = 0.98 + (copy_index * 0.01)  # Очень небольшое изменение яркости (0.98-1.03)
+            
+            # Применяем изменение яркости через изменение пикселей каждого кадра
+            def adjust_brightness(image):
+                """Изменяет яркость изображения"""
+                # Умножаем значения пикселей на коэффициент яркости
+                adjusted = image * brightness_factor
+                # Ограничиваем значения в диапазоне 0-255
+                return np.clip(adjusted, 0, 255).astype('uint8')
+            
+            # Применяем функцию к каждому кадру видео
+            # Используем оптимизированную версию для ускорения
+            try:
+                modified_video = video.fl_image(adjust_brightness)
+                logger.info(f"Копия {copy_index + 1}: применено незаметное изменение яркости ({brightness_factor:.2f})")
+            except Exception as e:
+                logger.warning(f"Ошибка при изменении яркости: {e}, возвращаем оригинальное видео")
+                modified_video = video
+        else:
+            modified_video = video
+        
         return modified_video
 
 
@@ -394,7 +336,6 @@ def add_frame_to_video(video, color, thickness, frame_style='top_bottom_thick'):
             print(f"Ошибка при получении информации о видео: {e}")
             return None
 
-
 def process_video_copy_new(input_path: str, output_path: str, copy_index: int, add_frames: bool, compress: bool, change_resolution: bool, user_id: int = None):
     """Обрабатывает одну копию видео - функция для использования в ProcessPoolExecutor"""
     video = None
@@ -432,14 +373,20 @@ def process_video_copy_new(input_path: str, output_path: str, copy_index: int, a
             else:
                 logger.info(f"Разрешение уже {target_width}x{target_height}, изменение не требуется")
         
-        # Настройки сжатия
+        # Настройки сжатия с шестью вариантами битрейта
+        bitrate_options = ['2000k', '1500k', '1600k', '1700k', '1800k', '1900k']
+        
         if compress:
+            # При сжатии используем случайный битрейт из шести вариантов
+            selected_bitrate = random.choice(bitrate_options)
             codec_settings = {
                 'codec': 'libx264',
-                'bitrate': '1000k',
+                'bitrate': selected_bitrate,
                 'audio_codec': 'aac'
             }
+            logger.info(f"Выбран битрейт для сжатия: {selected_bitrate}")
         else:
+            # Без сжатия используем максимальный битрейт
             codec_settings = {
                 'codec': 'libx264',
                 'bitrate': '2000k',

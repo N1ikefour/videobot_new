@@ -1073,7 +1073,8 @@ class VideoBot:
             
             # Увеличиваем таймаут для больших файлов
             file_size = os.path.getsize(input_path) / (1024 * 1024)  # MB
-            timeout_seconds = max(300, int(file_size * 30))  # Минимум 5 минут
+            timeout_seconds = max(600, int(file_size * 60))  # Минимум 10 минут, +60 сек на MB
+            logger.info(f"Установлен таймаут: {timeout_seconds} секунд для файла {file_size:.2f} MB")
             
             result = await asyncio.wait_for(
                 loop.run_in_executor(
@@ -1087,7 +1088,8 @@ class VideoBot:
             return True
             
         except asyncio.TimeoutError:
-            logger.error(f"Таймаут при создании копии {copy_index+1}")
+            logger.error(f"Таймаут при создании копии {copy_index+1} (превышен лимит {timeout_seconds} секунд)")
+            logger.error(f"Файл: {input_path}, размер: {file_size:.2f} MB")
             return False
         except Exception as e:
             logger.error(f"Ошибка при создании копии {copy_index+1}: {str(e)}")
