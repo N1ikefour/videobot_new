@@ -3,13 +3,15 @@ import os
 import asyncio
 import time
 import gc
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
 )
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_IDS
 from video_processor import VideoProcessor, process_video_copy_new
+from database import DatabaseManager
 
 # Настройка логирования
 logging.basicConfig(
@@ -31,11 +33,45 @@ class VideoBot:
         # Для конфигурации: 16 vCPU, 32 GB RAM
         # Оптимальное значение: 8 одновременных обработок
         self.processing_semaphore = asyncio.Semaphore(10)
+        # Менеджер базы данных для статистики пользователей
+        self.db_manager = DatabaseManager()
+        # ID администраторов загружаются из .env файла
+        self.admin_ids = ADMIN_IDS
+
+    def is_admin(self, user_id: int) -> bool:
+        """Проверяет, является ли пользователь администратором"""
+        return user_id in self.admin_ids
+
+    async def _delayed_file_cleanup(self, file_path: str, max_attempts: int = 5):
+        """Отложенное удаление файла с повторными попытками"""
+        for attempt in range(max_attempts):
+            try:
+                await asyncio.sleep(2 ** attempt)  # Экспоненциальная задержка
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Файл {file_path} удален с попытки {attempt + 1}")
+                    return
+            except PermissionError:
+                logger.warning(f"Попытка {attempt + 1}: файл {file_path} все еще заблокирован")
+            except Exception as e:
+                logger.error(f"Ошибка при удалении файла {file_path} (попытка {attempt + 1}): {e}")
+        
+        logger.error(f"Не удалось удалить файл {file_path} после {max_attempts} попыток")
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         user_name = update.effective_user.first_name
         user_id = update.effective_user.id
+        username = update.effective_user.username
+        last_name = update.effective_user.last_name
+        
+        # Регистрируем пользователя в базе данных
+        self.db_manager.register_user(
+            user_id=user_id,
+            username=username,
+            first_name=user_name,
+            last_name=last_name
+        )
         
         # Очищаем данные пользователя при старте
         if user_id in self.user_data:
@@ -109,6 +145,173 @@ class VideoBot:
             help_text,
             parse_mode='Markdown'
         )
+
+    async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для получения общей статистики пользователей (только для админов)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+            return
+        
+        try:
+            stats = self.db_manager.get_all_users_stats()
+            recent_stats = self.db_manager.get_recent_activity(7)
+            
+            # Формируем сообщение со статистикой
+            message = (
+                "📊 **ОБЩАЯ СТАТИСТИКА БОТА**\n\n"
+                f"👥 **Пользователи:** {stats['total_users']}\n"
+                f"📹 **Видео обработано:** {stats['total_videos_processed']}\n"
+                f"🎬 **Выходных видео:** {stats['total_output_videos']}\n"
+                f"⚙️ **Сессий обработки:** {stats['total_processing_sessions']}\n\n"
+                f"📈 **За последние 7 дней:**\n"
+                f"• Активных пользователей: {recent_stats['active_users']}\n"
+                f"• Обработано видео: {recent_stats['videos_processed']}\n"
+                f"• Создано выходных видео: {recent_stats['output_videos']}\n\n"
+                "🔝 **ТОП-10 ПОЛЬЗОВАТЕЛЕЙ:**\n"
+            )
+            
+            # Добавляем топ пользователей
+            for i, user in enumerate(stats['users'][:10], 1):
+                username = user['username'] if user['username'] != 'N/A' else 'Без username'
+                first_name = user['first_name'] if user['first_name'] != 'N/A' else 'Без имени'
+                last_seen_msk = user.get('last_seen_msk', 'N/A')
+                message += (
+                    f"{i}. {first_name} (@{username})\n"
+                    f"   ID: {user['user_id']}\n"
+                    f"   📹 Видео: {user['total_videos_processed']} | "
+                    f"🎬 Выходных: {user['total_output_videos']} | "
+                    f"📅 Дней активен: {user['unique_days_active']}\n"
+                    f"   🕐 Последнее использование: {last_seen_msk}\n\n"
+                )
+            
+            # Разбиваем сообщение на части если оно слишком длинное
+            if len(message) > 4000:
+                # Отправляем основную статистику
+                main_stats = (
+                    "📊 **ОБЩАЯ СТАТИСТИКА БОТА**\n\n"
+                    f"👥 **Пользователи:** {stats['total_users']}\n"
+                    f"📹 **Видео обработано:** {stats['total_videos_processed']}\n"
+                    f"🎬 **Выходных видео:** {stats['total_output_videos']}\n"
+                    f"⚙️ **Сессий обработки:** {stats['total_processing_sessions']}\n\n"
+                    f"📈 **За последние 7 дней:**\n"
+                    f"• Активных пользователей: {recent_stats['active_users']}\n"
+                    f"• Обработано видео: {recent_stats['videos_processed']}\n"
+                    f"• Создано выходных видео: {recent_stats['output_videos']}"
+                )
+                await update.message.reply_text(main_stats, parse_mode='Markdown')
+                
+                # Отправляем топ пользователей отдельным сообщением
+                top_users = "🔝 **ТОП-10 ПОЛЬЗОВАТЕЛЕЙ:**\n"
+                for i, user in enumerate(stats['users'][:10], 1):
+                    username = user['username'] if user['username'] != 'N/A' else 'Без username'
+                    first_name = user['first_name'] if user['first_name'] != 'N/A' else 'Без имени'
+                    last_seen_msk = user.get('last_seen_msk', 'N/A')
+                    top_users += (
+                        f"{i}. {first_name} (@{username})\n"
+                        f"   ID: {user['user_id']}\n"
+                        f"   📹 Видео: {user['total_videos_processed']} | "
+                        f"🎬 Выходных: {user['total_output_videos']} | "
+                        f"📅 Дней активен: {user['unique_days_active']}\n"
+                        f"   🕐 Последнее использование: {last_seen_msk}\n\n"
+                    )
+                await update.message.reply_text(top_users)
+            else:
+                await update.message.reply_text(message, parse_mode='Markdown')
+                
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики: {e}")
+            await update.message.reply_text(f"❌ Ошибка при получении статистики: {str(e)}")
+
+    async def user_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для получения статистики конкретного пользователя (только для админов)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+            return
+        
+        # Получаем ID пользователя из аргументов команды
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Укажите ID пользователя.\n"
+                "Пример: `/userstats 123456789`"
+            )
+            return
+        
+        try:
+            target_user_id = int(context.args[0])
+            user_stats = self.db_manager.get_user_stats(target_user_id)
+            
+            if not user_stats:
+                await update.message.reply_text(f"❌ Пользователь с ID {target_user_id} не найден.")
+                return
+            
+            # Формируем сообщение со статистикой пользователя
+            username = user_stats.get('username', 'N/A')
+            first_name = user_stats.get('first_name', 'N/A')
+            last_name = user_stats.get('last_name', 'N/A')
+            
+            # Используем московское время
+            first_seen = user_stats.get('first_seen_msk', 'N/A')
+            last_seen = user_stats.get('last_seen_msk', 'N/A')
+            
+            message = (
+                f"👤 **СТАТИСТИКА ПОЛЬЗОВАТЕЛЯ**\n\n"
+                f"🆔 **ID:** {target_user_id}\n"
+                f"👤 **Имя:** {first_name} {last_name}\n"
+                f"📱 **Username:** @{username}\n\n"
+                f"📅 **Активность:**\n"
+                f"• Первый визит: {first_seen}\n"
+                f"• Последний визит: {last_seen}\n"
+                f"• Дней активен: {user_stats.get('unique_days_active', 0)}\n\n"
+                f"📹 **Обработка видео:**\n"
+                f"• Видео загружено: {user_stats.get('total_videos_processed', 0)}\n"
+                f"• Выходных видео: {user_stats.get('total_output_videos', 0)}\n"
+                f"• Сессий обработки: {user_stats.get('processing_sessions', 0)}\n"
+                f"• Среднее на сессию: {user_stats.get('avg_output_per_session', 0)}\n\n"
+            )
+            
+            # Добавляем последние 5 обработок видео
+            video_history = user_stats.get('video_history', [])
+            if video_history:
+                message += "📋 **Последние обработки:**\n"
+                for i, record in enumerate(video_history[-5:], 1):
+                    timestamp = datetime.fromisoformat(record.get('timestamp', '1970-01-01')).strftime('%d.%m %H:%M')
+                    output_count = record.get('output_count', 0)
+                    message += f"{i}. {timestamp} - {output_count} копий\n"
+            else:
+                message += "📋 **История обработки:** Нет записей\n"
+            
+            await update.message.reply_text(message, parse_mode='Markdown')
+            
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат ID пользователя. Используйте только цифры.")
+        except Exception as e:
+            logger.error(f"Ошибка при получении статистики пользователя: {e}")
+            await update.message.reply_text(f"❌ Ошибка при получении статистики: {str(e)}")
+
+    async def admin_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда помощи для администраторов"""
+        user_id = update.effective_user.id
+        
+        if not self.is_admin(user_id):
+            await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+            return
+        
+        help_text = (
+            "🛠️ **КОМАНДЫ ДЛЯ АДМИНИСТРАТОРОВ**\n\n"
+            "📊 **Статистика:**\n"
+            "• `/adminstats` - Общая статистика бота\n"
+            "• `/userstats <ID>` - Статистика конкретного пользователя\n\n"
+            "📋 **Примеры:**\n"
+            "• `/userstats 123456789` - Статистика пользователя с ID 123456789\n\n"
+            "ℹ️ **Примечание:**\n"
+            "Все команды доступны только администраторам."
+        )
+        
+        await update.message.reply_text(help_text, parse_mode='Markdown')
 
     async def main_menu_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик главного меню"""
@@ -632,28 +835,73 @@ class VideoBot:
                     # Удаляем временный файл
                     os.remove(video_path)
                 
-                # Удаляем входной файл
+                # Удаляем входной файл с задержкой
                 if input_path and os.path.exists(input_path):
-                    os.remove(input_path)
+                    try:
+                        # Небольшая задержка для освобождения файла
+                        await asyncio.sleep(1)
+                        os.remove(input_path)
+                        logger.info(f"Удален входной файл: {input_path}")
+                    except PermissionError:
+                        logger.warning(f"Не удалось удалить входной файл {input_path} - файл заблокирован")
+                        # Планируем удаление позже
+                        asyncio.create_task(self._delayed_file_cleanup(input_path))
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении входного файла {input_path}: {e}")
                 
                 # Финальное сообщение о завершении
-                await processing_message.edit_text(
-                    f"✅ Обработка завершена!\n"
-                    f"📹 Отправлено {len(processed_videos)} уникальных копий",
-                    parse_mode='Markdown'
-                )
+                try:
+                    await processing_message.edit_text(
+                        f"✅ Обработка завершена!\n"
+                        f"📹 Отправлено {len(processed_videos)} уникальных копий"
+                    )
+                except Exception as e:
+                    logger.warning(f"Не удалось отредактировать сообщение: {e}")
+                    # Отправляем новое сообщение вместо редактирования
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=f"✅ Обработка завершена!\n"
+                             f"📹 Отправлено {len(processed_videos)} уникальных копий"
+                    )
+                
+                # Записываем статистику обработки
+                try:
+                    input_video_info = {
+                        'file_id': video_file_id,
+                        'file_size': file_size,
+                        'duration': 'unknown'  # Можно добавить получение длительности
+                    }
+                    
+                    processing_params = {
+                        'copies': copies,
+                        'add_frames': add_frames,
+                        'compress': compress,
+                        'change_resolution': change_resolution
+                    }
+                    
+                    self.db_manager.record_video_processing(
+                        user_id=user_id,
+                        input_video_info=input_video_info,
+                        output_count=len(processed_videos),
+                        processing_params=processing_params
+                    )
+                    logger.info(f"Статистика записана для пользователя {user_id}")
+                except Exception as e:
+                    logger.error(f"Ошибка при записи статистики: {e}")
                 
                 # Отправляем отдельное сообщение с предложением прикрепить следующее видео
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="📹 **Прикрепите следующее видео**\n\n"
-                         "📋 **Требования:**\n"
-                         "• Размер файла: до 50 МБ\n"
-                         "• Формат: MP4, AVI, MKV\n"
-                         "• Длительность: до 10 минут\n\n"
-                         "Просто прикрепите видео к сообщению 👇",
-                    parse_mode='Markdown'
-                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="📹 Прикрепите следующее видео\n\n"
+                             "📋 Требования:\n"
+                             "• Размер файла: до 50 МБ\n"
+                             "• Формат: MP4, AVI, MKV\n"
+                             "• Длительность: до 10 минут\n\n"
+                             "Просто прикрепите видео к сообщению 👇"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке сообщения: {e}")
                 
                 # Устанавливаем состояние ожидания видео через context
                 context.user_data['conversation_state'] = WAITING_FOR_VIDEO
@@ -670,35 +918,41 @@ class VideoBot:
                 try:
                     await processing_message.edit_text(
                         f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
-                        "📹 **Прикрепите следующее видео**\n\n"
-                        "📋 **Требования:**\n"
+                        "📹 Прикрепите следующее видео\n\n"
+                        "📋 Требования:\n"
                         "• Размер файла: до 50 МБ\n"
                         "• Формат: MP4, AVI, MKV\n"
                         "• Длительность: до 10 минут\n\n"
-                        "Просто прикрепите видео к сообщению 👇",
-                        parse_mode='Markdown'
+                        "Просто прикрепите видео к сообщению 👇"
                     )
-                except:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
-                             "📹 **Прикрепите следующее видео**\n\n"
-                             "📋 **Требования:**\n"
-                             "• Размер файла: до 50 МБ\n"
-                             "• Формат: MP4, AVI, MKV\n"
-                             "• Длительность: до 10 минут\n\n"
-                             "Просто прикрепите видео к сообщению 👇",
-                        parse_mode='Markdown'
-                    )
+                except Exception as edit_error:
+                    logger.warning(f"Не удалось отредактировать сообщение об ошибке: {edit_error}")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"❌ Произошла ошибка при обработке видео: {str(e)}\n\n"
+                                 "📹 Прикрепите следующее видео\n\n"
+                                 "📋 Требования:\n"
+                                 "• Размер файла: до 50 МБ\n"
+                                 "• Формат: MP4, AVI, MKV\n"
+                                 "• Длительность: до 10 минут\n\n"
+                                 "Просто прикрепите видео к сообщению 👇"
+                        )
+                    except Exception as send_error:
+                        logger.error(f"Не удалось отправить сообщение об ошибке: {send_error}")
                 
                 # Устанавливаем состояние ожидания видео через context
                 context.user_data['conversation_state'] = WAITING_FOR_VIDEO
             finally:
-                # Очищаем временные файлы при отмене
+                # Очищаем временные файлы при отмене с безопасным удалением
                 if input_path and os.path.exists(input_path):
                     try:
+                        await asyncio.sleep(0.5)  # Небольшая задержка
                         os.remove(input_path)
                         logger.info(f"Удален входной файл: {input_path}")
+                    except PermissionError:
+                        logger.warning(f"Входной файл {input_path} заблокирован, планируем отложенное удаление")
+                        asyncio.create_task(self._delayed_file_cleanup(input_path))
                     except Exception as e:
                         logger.error(f"Ошибка при удалении входного файла {input_path}: {e}")
                 
@@ -706,8 +960,12 @@ class VideoBot:
                 for video_path in processed_videos:
                     if os.path.exists(video_path):
                         try:
+                            await asyncio.sleep(0.1)  # Небольшая задержка между удалениями
                             os.remove(video_path)
                             logger.info(f"Удален обработанный файл: {video_path}")
+                        except PermissionError:
+                            logger.warning(f"Обработанный файл {video_path} заблокирован, планируем отложенное удаление")
+                            asyncio.create_task(self._delayed_file_cleanup(video_path))
                         except Exception as e:
                             logger.error(f"Ошибка при удалении обработанного файла {video_path}: {e}")
                 
@@ -1173,6 +1431,11 @@ def main():
     
     # Добавляем обработчик команды /help
     application.add_handler(CommandHandler('help', video_bot.help_command))
+    
+    # Добавляем админские команды
+    application.add_handler(CommandHandler('adminstats', video_bot.admin_stats))
+    application.add_handler(CommandHandler('userstats', video_bot.user_stats))
+    application.add_handler(CommandHandler('adminhelp', video_bot.admin_help))
     
     # Запускаем бота
     logger.info("Бот запущен")

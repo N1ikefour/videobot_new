@@ -5,6 +5,18 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
+# ID администраторов (через запятую в .env файле)
+ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '')
+ADMIN_IDS = set()
+if ADMIN_IDS_STR:
+    try:
+        # Парсим ID из строки, разделенной запятыми
+        admin_ids_list = [int(id_str.strip()) for id_str in ADMIN_IDS_STR.split(',') if id_str.strip()]
+        ADMIN_IDS = set(admin_ids_list)
+    except ValueError:
+        print("Ошибка: Неверный формат ADMIN_IDS в .env файле. Используйте числа через запятую.")
+        ADMIN_IDS = set()
+
 # Настройки для обработки видео
 MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50 MB
 SUPPORTED_FORMATS = ['.mp4', '.avi', '.mov', '.mkv']
