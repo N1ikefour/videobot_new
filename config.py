@@ -19,10 +19,16 @@ if ADMIN_IDS_STR:
 
 # Настройки для обработки видео
 MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50 MB
-SUPPORTED_FORMATS = ['.mp4', '.avi', '.mov', '.mkv']
+SUPPORTED_VIDEO_FORMATS = ['.mp4', '.avi', '.mov', '.mkv']
+
+# Настройки для обработки изображений
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
+SUPPORTED_IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp']
 OUTPUT_DIR = 'processed_videos'
+OUTPUT_IMAGES_DIR = 'processed_images'
 TEMP_DIR = 'temp'
 
 # Создаем необходимые директории
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)

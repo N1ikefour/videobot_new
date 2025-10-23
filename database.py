@@ -52,6 +52,8 @@ class DatabaseManager:
                         last_seen TEXT NOT NULL,
                         total_videos_processed INTEGER DEFAULT 0,
                         total_output_videos INTEGER DEFAULT 0,
+                        total_images_processed INTEGER DEFAULT 0,
+                        total_output_images INTEGER DEFAULT 0,
                         processing_sessions INTEGER DEFAULT 0,
                         unique_days_active INTEGER DEFAULT 0
                     )
@@ -71,6 +73,20 @@ class DatabaseManager:
                 # Создаем таблицу истории обработки видео
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS video_processing_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        input_file_id TEXT,
+                        input_file_size INTEGER,
+                        output_count INTEGER NOT NULL,
+                        processing_params TEXT,
+                        FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    )
+                ''')
+                
+                # Создаем таблицу истории обработки изображений
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS image_processing_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
                         timestamp TEXT NOT NULL,
@@ -210,10 +226,67 @@ class DatabaseManager:
                 ))
                 
                 conn.commit()
-                logger.info(f"Статистика обработки записана для пользователя {user_id}")
+                logger.info(f"Статистика обработки видео записана для пользователя {user_id}")
                 
         except Exception as e:
-            logger.error(f"Ошибка при записи статистики обработки: {e}")
+            logger.error(f"Ошибка при записи статистики обработки видео: {e}")
+            raise
+
+    def record_image_processing(self, user_id: int, input_image_info: Dict, output_count: int, processing_params: Dict):
+        """Записывает информацию об обработке изображений"""
+        try:
+            current_time = get_utc_now()
+            today = datetime.now().date().isoformat()
+            
+            with sqlite3.connect(self.db_file) as conn:
+                cursor = conn.cursor()
+                
+                # Обновляем статистику пользователя
+                cursor.execute('''
+                    UPDATE users 
+                    SET total_images_processed = total_images_processed + 1,
+                        total_output_images = total_output_images + ?,
+                        processing_sessions = processing_sessions + 1,
+                        last_seen = ?
+                    WHERE user_id = ?
+                ''', (output_count, current_time, user_id))
+                
+                # Добавляем текущий день в активные дни
+                cursor.execute('''
+                    INSERT OR IGNORE INTO user_activity_days (user_id, activity_date)
+                    VALUES (?, ?)
+                ''', (user_id, today))
+                
+                # Обновляем количество уникальных дней активности
+                cursor.execute('''
+                    UPDATE users 
+                    SET unique_days_active = (
+                        SELECT COUNT(DISTINCT activity_date) 
+                        FROM user_activity_days 
+                        WHERE user_id = ?
+                    )
+                    WHERE user_id = ?
+                ''', (user_id, user_id))
+                
+                # Записываем в историю обработки изображений
+                cursor.execute('''
+                    INSERT INTO image_processing_history 
+                    (user_id, timestamp, input_file_id, input_file_size, output_count, processing_params)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id, 
+                    current_time, 
+                    input_image_info.get('file_id'),
+                    input_image_info.get('file_size'),
+                    output_count,
+                    json.dumps(processing_params)
+                ))
+                
+                conn.commit()
+                logger.info(f"Статистика обработки изображений записана для пользователя {user_id}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при записи статистики обработки изображений: {e}")
             raise
     
     def get_user_stats(self, user_id: int) -> Optional[Dict]:
@@ -224,7 +297,8 @@ class DatabaseManager:
                 
                 cursor.execute('''
                     SELECT user_id, username, first_name, last_name, first_seen, last_seen,
-                           total_videos_processed, total_output_videos, processing_sessions, unique_days_active
+                           total_videos_processed, total_output_videos, total_images_processed, 
+                           total_output_images, processing_sessions, unique_days_active
                     FROM users 
                     WHERE user_id = ?
                 ''', (user_id,))
@@ -250,10 +324,11 @@ class DatabaseManager:
                         'processing_params': json.loads(record[2]) if record[2] else {}
                     })
                 
-                # Вычисляем среднее количество выходных видео за сессию
+                # Вычисляем среднее количество выходных файлов за сессию
                 avg_output = 0
-                if user_data[8] > 0:  # processing_sessions > 0
-                    avg_output = round(user_data[7] / user_data[8], 2)  # total_output_videos / processing_sessions
+                if user_data[10] > 0:  # processing_sessions > 0
+                    total_outputs = user_data[7] + user_data[9]  # videos + images
+                    avg_output = round(total_outputs / user_data[10], 2)
                 
                 return {
                     'user_id': user_data[0],
@@ -266,8 +341,10 @@ class DatabaseManager:
                     'last_seen_msk': utc_to_msk(user_data[5]),
                     'total_videos_processed': user_data[6],
                     'total_output_videos': user_data[7],
-                    'processing_sessions': user_data[8],
-                    'unique_days_active': user_data[9],
+                    'total_images_processed': user_data[8],
+                    'total_output_images': user_data[9],
+                    'processing_sessions': user_data[10],
+                    'unique_days_active': user_data[11],
                     'avg_output_per_session': avg_output,
                     'video_history': processing_history
                 }
@@ -288,23 +365,26 @@ class DatabaseManager:
                         COUNT(*) as total_users,
                         SUM(total_videos_processed) as total_videos_processed,
                         SUM(total_output_videos) as total_output_videos,
+                        SUM(total_images_processed) as total_images_processed,
+                        SUM(total_output_images) as total_output_images,
                         SUM(processing_sessions) as total_processing_sessions
                     FROM users
                 ''')
                 
                 totals = cursor.fetchone()
                 
-                # Топ пользователей по количеству обработанных видео
+                # Топ пользователей по общему количеству обработанных файлов
                 cursor.execute('''
                     SELECT user_id, username, first_name, last_name, last_seen,
-                           total_videos_processed, total_output_videos, unique_days_active,
+                           total_videos_processed, total_output_videos, total_images_processed, 
+                           total_output_images, unique_days_active,
                            CASE 
                                WHEN processing_sessions > 0 
-                               THEN ROUND(CAST(total_output_videos AS REAL) / processing_sessions, 2)
+                               THEN ROUND(CAST((total_output_videos + total_output_images) AS REAL) / processing_sessions, 2)
                                ELSE 0 
                            END as avg_output_per_session
                     FROM users 
-                    ORDER BY total_videos_processed DESC 
+                    ORDER BY (total_videos_processed + total_images_processed) DESC 
                     LIMIT 10
                 ''')
                 
@@ -319,15 +399,19 @@ class DatabaseManager:
                         'last_seen_msk': utc_to_msk(row[4]),
                         'total_videos_processed': row[5],
                         'total_output_videos': row[6],
-                        'unique_days_active': row[7],
-                        'avg_output_per_session': row[8]
+                        'total_images_processed': row[7],
+                        'total_output_images': row[8],
+                        'unique_days_active': row[9],
+                        'avg_output_per_session': row[10]
                     })
                 
                 return {
                     'total_users': totals[0] or 0,
                     'total_videos_processed': totals[1] or 0,
                     'total_output_videos': totals[2] or 0,
-                    'total_processing_sessions': totals[3] or 0,
+                    'total_images_processed': totals[3] or 0,
+                    'total_output_images': totals[4] or 0,
+                    'total_processing_sessions': totals[5] or 0,
                     'users': top_users
                 }
                 
@@ -337,6 +421,8 @@ class DatabaseManager:
                 'total_users': 0,
                 'total_videos_processed': 0,
                 'total_output_videos': 0,
+                'total_images_processed': 0,
+                'total_output_images': 0,
                 'total_processing_sessions': 0,
                 'users': []
             }
@@ -353,7 +439,9 @@ class DatabaseManager:
                 cursor.execute('''
                     SELECT COUNT(DISTINCT u.user_id) as active_users,
                            SUM(u.total_videos_processed) as videos_processed,
-                           SUM(u.total_output_videos) as output_videos
+                           SUM(u.total_output_videos) as output_videos,
+                           SUM(u.total_images_processed) as images_processed,
+                           SUM(u.total_output_images) as output_images
                     FROM users u
                     WHERE u.last_seen >= ?
                 ''', (cutoff_date,))
@@ -364,7 +452,9 @@ class DatabaseManager:
                     'days': days,
                     'active_users': recent_stats[0] or 0,
                     'videos_processed': recent_stats[1] or 0,
-                    'output_videos': recent_stats[2] or 0
+                    'output_videos': recent_stats[2] or 0,
+                    'images_processed': recent_stats[3] or 0,
+                    'output_images': recent_stats[4] or 0
                 }
                 
         except Exception as e:
@@ -373,7 +463,9 @@ class DatabaseManager:
                 'days': days,
                 'active_users': 0,
                 'videos_processed': 0,
-                'output_videos': 0
+                'output_videos': 0,
+                'images_processed': 0,
+                'output_images': 0
             }
     
     def cleanup_old_data(self, days_to_keep: int = 30):
@@ -391,9 +483,15 @@ class DatabaseManager:
                     WHERE activity_date < ?
                 ''', (cutoff_date,))
                 
-                # Удаляем старую историю обработки
+                # Удаляем старую историю обработки видео
                 cursor.execute('''
                     DELETE FROM video_processing_history 
+                    WHERE timestamp < ?
+                ''', (cutoff_timestamp,))
+                
+                # Удаляем старую историю обработки изображений
+                cursor.execute('''
+                    DELETE FROM image_processing_history 
                     WHERE timestamp < ?
                 ''', (cutoff_timestamp,))
                 
@@ -431,14 +529,18 @@ class DatabaseManager:
                 activity_count = cursor.fetchone()[0]
                 
                 cursor.execute("SELECT COUNT(*) FROM video_processing_history")
-                history_count = cursor.fetchone()[0]
+                video_history_count = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT COUNT(*) FROM image_processing_history")
+                image_history_count = cursor.fetchone()[0]
                 
                 return {
                     'database_size_bytes': db_size,
                     'database_size_mb': round(db_size / (1024 * 1024), 2),
                     'users_count': users_count,
                     'activity_records': activity_count,
-                    'history_records': history_count
+                    'video_history_records': video_history_count,
+                    'image_history_records': image_history_count
                 }
                 
         except Exception as e:
