@@ -197,15 +197,30 @@ class VideoBot:
                 username = user['username'] if user['username'] != 'N/A' else 'Без username'
                 first_name = user['first_name'] if user['first_name'] != 'N/A' else 'Без имени'
                 last_seen_msk = user.get('last_seen_msk', 'N/A')
+                
+                # Экранируем специальные символы Markdown
+                def escape_markdown(text):
+                    if text == 'N/A' or text is None:
+                        return text
+                    # Экранируем символы, которые могут нарушить Markdown
+                    escape_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+                    for char in escape_chars:
+                        text = str(text).replace(char, f'\\{char}')
+                    return text
+                
+                safe_username = escape_markdown(username)
+                safe_first_name = escape_markdown(first_name)
+                safe_last_seen = escape_markdown(last_seen_msk)
+                
                 message += (
-                    f"{i}. {first_name} (@{username})\n"
+                    f"{i}\\. {safe_first_name} \\(@{safe_username}\\)\n"
                     f"   ID: {user['user_id']}\n"
-                    f"   📹 Видео: {user['total_videos_processed']} | "
-                    f"🎬 Выходных: {user['total_output_videos']} | "
-                    f"🖼️ Изображений: {user['total_images_processed']} | "
-                    f"🎨 Выходных: {user['total_output_images']} | "
+                    f"   📹 Видео: {user['total_videos_processed']} \\| "
+                    f"🎬 Выходных: {user['total_output_videos']} \\| "
+                    f"🖼️ Изображений: {user['total_images_processed']} \\| "
+                    f"🎨 Выходных: {user['total_output_images']} \\| "
                     f"📅 Дней активен: {user['unique_days_active']}\n"
-                    f"   🕐 Последнее использование: {last_seen_msk}\n\n"
+                    f"   🕐 Последнее использование: {safe_last_seen}\n\n"
                 )
             
             # Разбиваем сообщение на части если оно слишком длинное
@@ -234,15 +249,30 @@ class VideoBot:
                     username = user['username'] if user['username'] != 'N/A' else 'Без username'
                     first_name = user['first_name'] if user['first_name'] != 'N/A' else 'Без имени'
                     last_seen_msk = user.get('last_seen_msk', 'N/A')
+                    
+                    # Экранируем специальные символы Markdown
+                    def escape_markdown(text):
+                        if text == 'N/A' or text is None:
+                            return text
+                        # Экранируем символы, которые могут нарушить Markdown
+                        escape_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+                        for char in escape_chars:
+                            text = str(text).replace(char, f'\\{char}')
+                        return text
+                    
+                    safe_username = escape_markdown(username)
+                    safe_first_name = escape_markdown(first_name)
+                    safe_last_seen = escape_markdown(last_seen_msk)
+                    
                     top_users += (
-                        f"{i}. {first_name} (@{username})\n"
+                        f"{i}\\. {safe_first_name} \\(@{safe_username}\\)\n"
                         f"   ID: {user['user_id']}\n"
-                        f"   📹 Видео: {user['total_videos_processed']} | "
-                        f"🎬 Выходных: {user['total_output_videos']} | "
-                        f"🖼️ Изображений: {user['total_images_processed']} | "
-                        f"🎨 Выходных: {user['total_output_images']} | "
+                        f"   📹 Видео: {user['total_videos_processed']} \\| "
+                        f"🎬 Выходных: {user['total_output_videos']} \\| "
+                        f"🖼️ Изображений: {user['total_images_processed']} \\| "
+                        f"🎨 Выходных: {user['total_output_images']} \\| "
                         f"📅 Дней активен: {user['unique_days_active']}\n"
-                        f"   🕐 Последнее использование: {last_seen_msk}\n\n"
+                        f"   🕐 Последнее использование: {safe_last_seen}\n\n"
                     )
                 await update.message.reply_text(top_users)
             else:
