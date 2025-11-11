@@ -108,8 +108,7 @@ class VideoBot:
         
         await update.message.reply_text(
             welcome_text,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
+            reply_markup=reply_markup
         )
         return MAIN_MENU
 
@@ -158,8 +157,7 @@ class VideoBot:
         )
         
         await update.message.reply_text(
-            help_text,
-            parse_mode='Markdown'
+            help_text
         )
 
     async def admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
